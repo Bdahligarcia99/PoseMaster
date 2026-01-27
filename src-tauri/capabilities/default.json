@@ -1,0 +1,19 @@
+{
+  "$schema": "https://schema.tauri.app/config/2/capability",
+  "identifier": "default",
+  "description": "Capability for the main window",
+  "local": true,
+  "windows": ["*"],
+  "permissions": [
+    "core:default",
+    "dialog:default",
+    "fs:default",
+    "fs:read-all",
+    "fs:write-all",
+    "fs:scope-home-recursive",
+    {
+      "identifier": "fs:scope",
+      "allow": ["$HOME/**", "/**"]
+    }
+  ]
+}
