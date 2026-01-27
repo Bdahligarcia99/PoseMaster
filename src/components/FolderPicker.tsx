@@ -6,6 +6,7 @@ import { useSettingsStore } from "../store/settingsStore";
 import { useSavedSessionsStore, SavedSession } from "../store/savedSessionsStore";
 import TimerPresets from "./TimerPresets";
 import PreviousSessions from "./PreviousSessions";
+import { APP_VERSION } from "../version";
 
 interface ImageInfo {
   path: string;
@@ -293,7 +294,12 @@ export default function FolderPicker() {
           
           {/* Header */}
           <div className="text-center py-4">
-            <h1 className="text-3xl font-bold text-dark-text">PoseMaster</h1>
+            <div className="flex items-center justify-center gap-2">
+              <h1 className="text-3xl font-bold text-dark-text">PoseMaster</h1>
+              <span className="text-xs text-dark-muted bg-dark-surface px-2 py-0.5 rounded-full">
+                v{APP_VERSION}
+              </span>
+            </div>
             <AppDescription />
             {/* Previous Sessions Button */}
             {sessionsLoaded && savedSessions.length > 0 && (

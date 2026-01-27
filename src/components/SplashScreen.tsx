@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { APP_VERSION } from "../version";
 
 interface SplashScreenProps {
   onComplete: () => void;
@@ -45,6 +46,9 @@ export default function SplashScreen({ onComplete, duration = 2500 }: SplashScre
 
       {/* App Name */}
       <h1 className="text-3xl font-bold text-dark-text mt-6">PoseMaster</h1>
+      
+      {/* Version */}
+      <span className="text-dark-muted/60 text-xs mt-1">v{APP_VERSION}</span>
       
       {/* Tagline */}
       <p className="text-dark-muted text-sm mt-2">Gesture Drawing Practice</p>
