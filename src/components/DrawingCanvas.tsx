@@ -1,4 +1,4 @@
-import { useRef, useState, useCallback } from "react";
+import { useRef, useState, useCallback, useEffect } from "react";
 import { Stage, Layer, Line } from "react-konva";
 import { useSessionStore, DrawingData } from "../store/sessionStore";
 import { useDrawingStore, BRUSH_CONFIGS, BrushType } from "../store/drawingStore";
@@ -11,10 +11,52 @@ interface DrawingCanvasProps {
 
 export default function DrawingCanvas({ width, height }: DrawingCanvasProps) {
   const stageRef = useRef<Konva.Stage>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const [isDrawing, setIsDrawing] = useState(false);
+  const previousToolRef = useRef<BrushType | null>(null);
+  const isUsingTabletEraserRef = useRef(false);
 
-  const { currentDrawingData, updateCurrentDrawing } = useSessionStore();
-  const { tool, color, strokeWidth, pushHistory } = useDrawingStore();
+  const { currentDrawingData, updateCurrentDrawing, eraserDisabled } = useSessionStore();
+  const { tool, color, strokeWidth, pushHistory, setTool } = useDrawingStore();
+
+  // Detect Wacom/tablet eraser end
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const handlePointerDown = (e: PointerEvent) => {
+      // Only handle pen input
+      if (e.pointerType !== "pen") return;
+
+      // Check for eraser end of stylus
+      // Method 1: button === 5 is the eraser button on Wacom tablets
+      // Method 2: Some tablets report eraser through buttons bitmask (bit 5 = 32)
+      const isEraserEnd = e.button === 5 || (e.buttons & 32) !== 0;
+
+      if (isEraserEnd && !eraserDisabled) {
+        // Switching to eraser - save previous tool
+        if (!isUsingTabletEraserRef.current && tool !== "eraser") {
+          previousToolRef.current = tool;
+          isUsingTabletEraserRef.current = true;
+          setTool("eraser");
+        }
+      } else if (e.button === 0 && isUsingTabletEraserRef.current) {
+        // Switching back to pen tip - restore previous tool
+        isUsingTabletEraserRef.current = false;
+        if (previousToolRef.current) {
+          setTool(previousToolRef.current);
+          previousToolRef.current = null;
+        }
+      }
+    };
+
+    // Listen on the container element
+    container.addEventListener("pointerdown", handlePointerDown);
+
+    return () => {
+      container.removeEventListener("pointerdown", handlePointerDown);
+    };
+  }, [tool, setTool, eraserDisabled]);
 
   // Get brush config for current tool
   const getBrushConfig = (brushType: BrushType) => {
@@ -117,22 +159,24 @@ export default function DrawingCanvas({ width, height }: DrawingCanvasProps) {
   };
 
   return (
-    <Stage
-      ref={stageRef}
-      width={width}
-      height={height}
-      onMouseDown={handleMouseDown}
-      onMousemove={handleMouseMove}
-      onMouseup={handleMouseUp}
-      onMouseLeave={handleMouseUp}
-      onTouchStart={handleMouseDown}
-      onTouchMove={handleMouseMove}
-      onTouchEnd={handleMouseUp}
-      style={{ cursor: "crosshair" }}
-    >
-      <Layer>
-        {currentDrawingData.lines.map((line, i) => renderLine(line, i))}
-      </Layer>
-    </Stage>
+    <div ref={containerRef} style={{ touchAction: "none" }}>
+      <Stage
+        ref={stageRef}
+        width={width}
+        height={height}
+        onMouseDown={handleMouseDown}
+        onMousemove={handleMouseMove}
+        onMouseup={handleMouseUp}
+        onMouseLeave={handleMouseUp}
+        onTouchStart={handleMouseDown}
+        onTouchMove={handleMouseMove}
+        onTouchEnd={handleMouseUp}
+        style={{ cursor: "crosshair" }}
+      >
+        <Layer>
+          {currentDrawingData.lines.map((line, i) => renderLine(line, i))}
+        </Layer>
+      </Stage>
+    </div>
   );
 }
