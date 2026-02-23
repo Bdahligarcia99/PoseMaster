@@ -44,6 +44,19 @@ export default function SessionSetup() {
   const [saveMessage, setSaveMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [includePreviewInSession, setIncludePreviewInSession] = useState(false);
 
+  // Prevent display sleep during setup (user is practicing)
+  useEffect(() => {
+    invoke("prevent_display_sleep").catch((err) => {
+      console.warn("Failed to prevent display sleep:", err);
+    });
+
+    return () => {
+      invoke("allow_display_sleep").catch((err) => {
+        console.warn("Failed to allow display sleep:", err);
+      });
+    };
+  }, []);
+
   // Load a random preview image (this image will be excluded from the actual session)
   useEffect(() => {
     const loadPreview = async () => {
@@ -498,9 +511,9 @@ export default function SessionSetup() {
           <div className="mb-6">
             <div className="flex items-center justify-between">
               <div>
-                <label className="text-dark-text font-medium">Disable Eraser</label>
+                <label className="text-dark-text font-medium">Practice Mode</label>
                 <p className="text-dark-muted text-xs mt-1">
-                  Practice without corrections
+                  Disable eraser, undo, and clear
                 </p>
               </div>
               <button

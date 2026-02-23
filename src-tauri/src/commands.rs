@@ -54,6 +54,60 @@ pub fn scan_folder_for_images(folder_path: String) -> Result<Vec<ImageInfo>, Str
     Ok(images)
 }
 
+/// Scan multiple folders recursively for image files
+#[tauri::command]
+pub fn scan_multiple_folders_for_images(folder_paths: Vec<String>) -> Result<Vec<ImageInfo>, String> {
+    let image_extensions = ["jpg", "jpeg", "png", "gif", "webp", "bmp", "tiff", "tif"];
+    let mut images: Vec<ImageInfo> = Vec::new();
+    let mut errors: Vec<String> = Vec::new();
+    
+    for folder_path in folder_paths {
+        let path = Path::new(&folder_path);
+        
+        if !path.exists() {
+            errors.push(format!("Folder does not exist: {}", folder_path));
+            continue;
+        }
+        
+        if !path.is_dir() {
+            errors.push(format!("Path is not a directory: {}", folder_path));
+            continue;
+        }
+        
+        for entry in WalkDir::new(path)
+            .follow_links(true)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
+            let entry_path = entry.path();
+            
+            if entry_path.is_file() {
+                if let Some(ext) = entry_path.extension() {
+                    let ext_lower = ext.to_string_lossy().to_lowercase();
+                    if image_extensions.contains(&ext_lower.as_str()) {
+                        let name = entry_path
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_default();
+                        
+                        images.push(ImageInfo {
+                            path: entry_path.to_string_lossy().to_string(),
+                            name,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    
+    // If all folders failed, return error
+    if images.is_empty() && !errors.is_empty() {
+        return Err(errors.join("; "));
+    }
+    
+    Ok(images)
+}
+
 /// Get an image file as base64 for display
 #[tauri::command]
 pub fn get_image_as_base64(image_path: String) -> Result<String, String> {

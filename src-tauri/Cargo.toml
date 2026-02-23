@@ -22,6 +22,16 @@ walkdir = "2"
 base64 = "0.22"
 image = "0.25"
 
+# Platform-specific dependencies for sleep prevention
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.58", features = ["Win32_System_Power"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "4", default-features = false, features = ["tokio"] }
+
 [profile.release]
 panic = "abort"
 codegen-units = 1

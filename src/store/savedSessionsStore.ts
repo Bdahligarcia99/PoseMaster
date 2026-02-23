@@ -17,9 +17,12 @@ export interface SavedSession {
   createdAt: number;
   lastAccessedAt: number;
   
-  // Folder info
+  // Folder info (single folder - kept for backward compatibility)
   folderPath: string;
   folderName: string;
+  // Multiple folders support
+  folderPaths?: string[];
+  folderNames?: string[];
   
   // Session settings
   settings: {

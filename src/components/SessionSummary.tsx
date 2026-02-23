@@ -144,7 +144,9 @@ export default function SessionSummary() {
     viewedImages, 
     resetSession, 
     folderPath, 
+    folderPaths,
     folderName, 
+    folderNames,
     images, 
     currentImageIndex,
     timerDuration,
@@ -226,8 +228,10 @@ export default function SessionSummary() {
       // Create new session
       await saveSession({
         name,
-        folderPath: folderPath || "",
+        folderPath: folderPath || (folderPaths.length > 0 ? folderPaths[0] : ""),
         folderName: folderName || "Unknown",
+        folderPaths: folderPaths.length > 0 ? folderPaths : (folderPath ? [folderPath] : []),
+        folderNames: folderNames.length > 0 ? folderNames : (folderName ? [folderName] : []),
         settings: { timerDuration, breakDuration, imageOpacity },
         currentImageIndex,
         totalImages: images.length,

@@ -79,6 +79,11 @@ export interface LineData {
   tool: BrushType;
 }
 
+export interface HistoryState {
+  history: Array<{ lines: LineData[] }>;
+  historyIndex: number;
+}
+
 interface DrawingState {
   tool: BrushType;
   color: string;
@@ -99,6 +104,10 @@ interface DrawingState {
   undo: () => LineData[] | null;
   redo: () => LineData[] | null;
   clearHistory: () => void;
+  
+  // Per-image history management
+  getHistoryState: () => HistoryState;
+  setHistoryState: (state: HistoryState) => void;
 }
 
 const PRESET_COLORS = [
@@ -165,4 +174,13 @@ export const useDrawingStore = create<DrawingState>((set, get) => ({
   },
   
   clearHistory: () => set({ history: [], historyIndex: -1 }),
+  
+  getHistoryState: () => {
+    const { history, historyIndex } = get();
+    return { history: [...history], historyIndex };
+  },
+  
+  setHistoryState: (state: HistoryState) => {
+    set({ history: state.history, historyIndex: state.historyIndex });
+  },
 }));

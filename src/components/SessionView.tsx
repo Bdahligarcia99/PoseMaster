@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, lazy, Suspense } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { useSessionStore } from "../store/sessionStore";
 import { useSavedSessionsStore, ImageDrawing } from "../store/savedSessionsStore";
 import ImageViewer from "./ImageViewer";
@@ -42,6 +43,19 @@ export default function SessionView() {
   const [showSaveModal, setShowSaveModal] = useState(false);
 
   const currentImage = images[currentImageIndex];
+
+  // Prevent display sleep during session
+  useEffect(() => {
+    invoke("prevent_display_sleep").catch((err) => {
+      console.warn("Failed to prevent display sleep:", err);
+    });
+
+    return () => {
+      invoke("allow_display_sleep").catch((err) => {
+        console.warn("Failed to allow display sleep:", err);
+      });
+    };
+  }, []);
 
   // Reset canvas ready state when image changes
   useEffect(() => {

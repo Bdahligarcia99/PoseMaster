@@ -68,11 +68,11 @@ export default function FolderPicker() {
   const [error, setError] = useState<string | null>(null);
   const [totalImages, setTotalImages] = useState<number>(0);
   const [selectedImageCount, setSelectedImageCount] = useState<number | null>(10); // Default to 10
-  const [currentFolderPath, setCurrentFolderPath] = useState<string | null>(null);
+  const [selectedFolderPaths, setSelectedFolderPaths] = useState<string[]>([]); // Multiple folder selection
   const [showPreviousSessions, setShowPreviousSessions] = useState(false);
   const hasAutoLoaded = useRef(false);
 
-  const { setFolderPath, setFolderName, setImages, enterSetup, startSession, resumeSession, viewSession, timerDuration, breakDuration, setBreakDuration, setMaxImages, setTimerDuration, setImageOpacity, setImageZoom, setEraserDisabled, setTimerHidden, returnToPreviousSessions, clearReturnToPreviousSessions } = useSessionStore();
+  const { setFolderPath, setFolderPaths, setFolderName, setFolderNames, setImages, enterSetup, startSession, resumeSession, viewSession, timerDuration, breakDuration, setBreakDuration, setMaxImages, setTimerDuration, setImageOpacity, setImageZoom, setEraserDisabled, setTimerHidden, returnToPreviousSessions, clearReturnToPreviousSessions } = useSessionStore();
   
   // Check if we should show Previous Sessions on mount (returning from gallery view)
   useEffect(() => {
@@ -81,10 +81,56 @@ export default function FolderPicker() {
       clearReturnToPreviousSessions();
     }
   }, [returnToPreviousSessions, clearReturnToPreviousSessions]);
-  const { savedFolders, settings, isLoaded, loadSettings, addFolder, removeFolder, updateSettings, setLastSelectedFolder } = useSettingsStore();
+  const { savedFolders, settings, isLoaded, loadSettings, addFolder, removeFolder, updateSettings, setLastSelectedFolders } = useSettingsStore();
   const { sessions: savedSessions, isLoaded: sessionsLoaded, loadSessions } = useSavedSessionsStore();
 
-  // Load folder images helper
+  // Load images from multiple folders
+  const loadMultipleFolderImages = useCallback(async (folderPaths: string[]) => {
+    if (folderPaths.length === 0) {
+      setTotalImages(0);
+      setImages([]);
+      setFolderPaths([]);
+      setFolderNames([]);
+      return;
+    }
+    
+    try {
+      setError(null);
+      setIsLoading(true);
+
+      const images = await invoke<ImageInfo[]>("scan_multiple_folders_for_images", {
+        folderPaths,
+      });
+
+      if (images.length === 0) {
+        setError("No images found in the selected folder(s). Supported formats: JPG, PNG, GIF, WebP, BMP, TIFF");
+        setIsLoading(false);
+        return;
+      }
+
+      const imagePaths = images.map((img) => img.path);
+      setFolderPaths(folderPaths);
+      
+      // Set folder names
+      const folderNames = folderPaths.map(p => p.split("/").pop() || p.split("\\").pop() || p);
+      setFolderNames(folderNames);
+      
+      setImages(imagePaths);
+      setTotalImages(imagePaths.length);
+      // Set default to 10 or total if less than 10
+      setSelectedImageCount(imagePaths.length <= 10 ? null : 10);
+      setIsLoading(false);
+
+      // Save the selection
+      await setLastSelectedFolders(folderPaths);
+    } catch (err) {
+      console.error("Error loading folders:", err);
+      setError(err instanceof Error ? err.message : "Failed to load images");
+      setIsLoading(false);
+    }
+  }, [setFolderPaths, setFolderNames, setImages, setLastSelectedFolders]);
+
+  // Load folder images helper (single folder - for adding new folders)
   const loadFolderImages = useCallback(async (folderPath: string, shouldSave: boolean = true) => {
     try {
       setError(null);
@@ -101,24 +147,22 @@ export default function FolderPicker() {
       }
 
       const imagePaths = images.map((img) => img.path);
-      setFolderPath(folderPath);
-      setImages(imagePaths);
-      setTotalImages(imagePaths.length);
-      setCurrentFolderPath(folderPath);
-      // Set default to 10 or total if less than 10
-      setSelectedImageCount(imagePaths.length <= 10 ? null : 10);
-      setIsLoading(false);
-
+      const folderName = folderPath.split("/").pop() || folderPath.split("\\").pop() || folderPath;
+      
       if (shouldSave) {
-        const folderName = folderPath.split("/").pop() || folderPath.split("\\").pop() || folderPath;
         await addFolder({
           path: folderPath,
           name: folderName,
           imageCount: imagePaths.length,
           addedAt: Date.now(),
         });
-        await setLastSelectedFolder(folderPath);
       }
+      
+      // Add to selection and reload
+      const newSelection = [...selectedFolderPaths, folderPath];
+      setSelectedFolderPaths(newSelection);
+      await loadMultipleFolderImages(newSelection);
+      setIsLoading(false);
 
       return true;
     } catch (err) {
@@ -127,7 +171,7 @@ export default function FolderPicker() {
       setIsLoading(false);
       return false;
     }
-  }, [setFolderPath, setImages, addFolder, setLastSelectedFolder]);
+  }, [addFolder, selectedFolderPaths, loadMultipleFolderImages]);
 
   // Load settings and saved sessions on mount
   useEffect(() => {
@@ -150,13 +194,21 @@ export default function FolderPicker() {
     }
   }, [isLoaded, settings.timerDuration, settings.breakDuration, settings.maxImages, settings.imageOpacity, settings.imageZoom, settings.eraserDisabled, settings.timerHidden, setTimerDuration, setBreakDuration, setImageOpacity, setImageZoom, setEraserDisabled, setTimerHidden]);
 
-  // Auto-load last selected folder (only once)
+  // Auto-load last selected folders (only once)
   useEffect(() => {
-    if (isLoaded && settings.lastSelectedFolder && !hasAutoLoaded.current) {
+    if (isLoaded && !hasAutoLoaded.current) {
       hasAutoLoaded.current = true;
-      loadFolderImages(settings.lastSelectedFolder, false);
+      const foldersToLoad = settings.lastSelectedFolders || [];
+      // Fall back to legacy single folder if no multi-folder selection exists
+      if (foldersToLoad.length === 0 && settings.lastSelectedFolder) {
+        setSelectedFolderPaths([settings.lastSelectedFolder]);
+        loadMultipleFolderImages([settings.lastSelectedFolder]);
+      } else if (foldersToLoad.length > 0) {
+        setSelectedFolderPaths(foldersToLoad);
+        loadMultipleFolderImages(foldersToLoad);
+      }
     }
-  }, [isLoaded, settings.lastSelectedFolder, loadFolderImages]);
+  }, [isLoaded, settings.lastSelectedFolders, settings.lastSelectedFolder, loadMultipleFolderImages]);
 
   // Save settings when going to setup (timer/break/count only - opacity/zoom saved in SessionSetup)
   const saveCurrentSettings = useCallback(() => {
@@ -201,19 +253,24 @@ export default function FolderPicker() {
     await loadFolderImages(selected as string, true);
   };
 
-  const handleSelectSavedFolder = async (folderPath: string) => {
-    await loadFolderImages(folderPath, false);
-    await setLastSelectedFolder(folderPath);
+  // Toggle folder selection for multi-select
+  const handleToggleFolderSelection = async (folderPath: string) => {
+    const newSelection = selectedFolderPaths.includes(folderPath)
+      ? selectedFolderPaths.filter(p => p !== folderPath)
+      : [...selectedFolderPaths, folderPath];
+    
+    setSelectedFolderPaths(newSelection);
+    await loadMultipleFolderImages(newSelection);
   };
 
   const handleRemoveFolder = async (folderPath: string, e: React.MouseEvent) => {
     e.stopPropagation();
     await removeFolder(folderPath);
-    if (currentFolderPath === folderPath) {
-      setCurrentFolderPath(null);
-      setTotalImages(0);
-      setFolderPath("");
-      setImages([]);
+    // Remove from selection if it was selected
+    if (selectedFolderPaths.includes(folderPath)) {
+      const newSelection = selectedFolderPaths.filter(p => p !== folderPath);
+      setSelectedFolderPaths(newSelection);
+      await loadMultipleFolderImages(newSelection);
     }
   };
 
@@ -222,10 +279,12 @@ export default function FolderPicker() {
     // Save current settings for next time
     saveCurrentSettings();
     
-    // Set folder name for potential saving later
-    if (currentFolderPath) {
-      const name = currentFolderPath.split("/").pop() || currentFolderPath.split("\\").pop() || currentFolderPath;
-      setFolderName(name);
+    // Set folder names for potential saving later
+    if (selectedFolderPaths.length > 0) {
+      const names = selectedFolderPaths.map(p => p.split("/").pop() || p.split("\\").pop() || p);
+      setFolderNames(names);
+      // Also set legacy single name (combined)
+      setFolderName(names.join(", "));
     }
     // Set max images if user selected a limit
     if (selectedImageCount && selectedImageCount < totalImages) {
@@ -342,44 +401,71 @@ export default function FolderPicker() {
               </button>
             </div>
             
-            {/* Folder Buttons */}
+            {/* Folder Buttons - Multi-select with checkboxes */}
             <div className="flex flex-wrap gap-2">
               {savedFolders.length === 0 ? (
                 <p className="text-dark-muted text-sm py-2">No folders added yet. Click "Add Folder" to get started.</p>
               ) : (
-                savedFolders.map((folder) => (
-                  <div key={folder.path} className="relative group">
-                    <button
-                      onClick={() => !isLoading && handleSelectSavedFolder(folder.path)}
-                      className={`px-4 py-2 rounded-lg font-medium transition-colors flex items-center gap-2
-                        ${currentFolderPath === folder.path 
-                          ? "bg-blue-600 text-white" 
-                          : "bg-dark-bg text-dark-text hover:bg-dark-accent"
-                        }`}
-                    >
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-                      </svg>
-                      <span>{folder.name}</span>
-                      <span className={`text-xs ${currentFolderPath === folder.path ? "text-blue-200" : "text-dark-muted"}`}>
-                        ({folder.imageCount})
-                      </span>
-                    </button>
-                    <button
-                      onClick={(e) => handleRemoveFolder(folder.path, e)}
-                      className="absolute -top-1 -right-1 w-5 h-5 bg-red-500 hover:bg-red-600 rounded-full 
-                                 text-white opacity-0 group-hover:opacity-100 transition-opacity
-                                 flex items-center justify-center"
-                      title="Remove folder"
-                    >
-                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                      </svg>
-                    </button>
-                  </div>
-                ))
+                savedFolders.map((folder) => {
+                  const isSelected = selectedFolderPaths.includes(folder.path);
+                  return (
+                    <div key={folder.path} className="relative group">
+                      <button
+                        onClick={() => !isLoading && handleToggleFolderSelection(folder.path)}
+                        className={`px-4 py-2 rounded-lg font-medium transition-colors flex items-center gap-2
+                          ${isSelected
+                            ? "bg-blue-600 text-white ring-2 ring-blue-400 ring-offset-2 ring-offset-dark-surface" 
+                            : "bg-dark-bg text-dark-text hover:bg-dark-accent"
+                          }`}
+                      >
+                        {/* Checkbox indicator */}
+                        <div className={`w-4 h-4 rounded border-2 flex items-center justify-center transition-colors
+                          ${isSelected 
+                            ? "bg-white border-white" 
+                            : "border-dark-muted"
+                          }`}
+                        >
+                          {isSelected && (
+                            <svg className="w-3 h-3 text-blue-600" fill="currentColor" viewBox="0 0 20 20">
+                              <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                            </svg>
+                          )}
+                        </div>
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                        </svg>
+                        <span>{folder.name}</span>
+                        <span className={`text-xs ${isSelected ? "text-blue-200" : "text-dark-muted"}`}>
+                          ({folder.imageCount})
+                        </span>
+                      </button>
+                      <button
+                        onClick={(e) => handleRemoveFolder(folder.path, e)}
+                        className="absolute -top-1 -right-1 w-5 h-5 bg-red-500 hover:bg-red-600 rounded-full 
+                                   text-white opacity-0 group-hover:opacity-100 transition-opacity
+                                   flex items-center justify-center"
+                        title="Remove folder"
+                      >
+                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                      </button>
+                    </div>
+                  );
+                })
               )}
             </div>
+            
+            {/* Selection summary */}
+            {selectedFolderPaths.length > 0 && (
+              <div className="mt-3 pt-3 border-t border-dark-accent">
+                <p className="text-dark-muted text-sm">
+                  <span className="text-dark-text font-medium">{selectedFolderPaths.length}</span> folder{selectedFolderPaths.length !== 1 ? 's' : ''} selected 
+                  {' '}&bull;{' '}
+                  <span className="text-dark-text font-medium">{totalImages}</span> images total
+                </p>
+              </div>
+            )}
 
             {/* Error display */}
             {error && (

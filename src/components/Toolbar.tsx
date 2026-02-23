@@ -1,6 +1,29 @@
-import { useEffect } from "react";
-import { useDrawingStore, PRESET_COLORS, BrushType, BRUSH_CONFIGS } from "../store/drawingStore";
+import { useEffect, useState, useRef } from "react";
+import { useDrawingStore, PRESET_COLORS, BrushType } from "../store/drawingStore";
 import { useSessionStore } from "../store/sessionStore";
+import { useSettingsStore } from "../store/settingsStore";
+
+// Tooltip descriptions for each brush type
+const BRUSH_TOOLTIPS: Record<BrushType, string> = {
+  pen: "Pen – Smooth, solid lines",
+  ballpoint: "Ballpoint – Fine, precise strokes",
+  pencil: "Pencil – Light, textured lines",
+  brush: "Brush – Soft, painterly strokes",
+  highlighter: "Highlighter – Transparent, wide marks",
+  eraser: "Eraser – Remove strokes",
+};
+
+// Color names for tooltips
+const COLOR_NAMES: Record<string, string> = {
+  "#ffffff": "White",
+  "#ef4444": "Red",
+  "#f97316": "Orange",
+  "#eab308": "Yellow",
+  "#22c55e": "Green",
+  "#3b82f6": "Blue",
+  "#8b5cf6": "Purple",
+  "#ec4899": "Pink",
+};
 
 // SVG icons for each brush type
 const BrushIcons: Record<BrushType, JSX.Element> = {
@@ -43,6 +66,12 @@ export default function Toolbar() {
   const { tool, color, strokeWidth, setTool, setColor, setStrokeWidth, undo, redo, clearHistory } =
     useDrawingStore();
   const { clearCurrentDrawing, updateCurrentDrawing, currentDrawingData, eraserDisabled } = useSessionStore();
+  const { settings, addCustomColor, removeCustomColor, resetCustomColors } = useSettingsStore();
+  
+  const [showColorMenu, setShowColorMenu] = useState(false);
+  const [pickerColor, setPickerColor] = useState(color);
+  const colorMenuRef = useRef<HTMLDivElement>(null);
+  const colorInputRef = useRef<HTMLInputElement>(null);
 
   // Switch to pen if eraser is disabled while selected
   useEffect(() => {
@@ -50,6 +79,27 @@ export default function Toolbar() {
       setTool("pen");
     }
   }, [eraserDisabled, tool, setTool]);
+  
+  // Close color menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (colorMenuRef.current && !colorMenuRef.current.contains(e.target as Node)) {
+        setShowColorMenu(false);
+      }
+    };
+    if (showColorMenu) {
+      document.addEventListener("mousedown", handleClickOutside);
+    }
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [showColorMenu]);
+  
+  // Update picker color when main color changes
+  useEffect(() => {
+    setPickerColor(color);
+  }, [color]);
+  
+  const customColors = settings.customColors || [];
+  const isCustomColor = !PRESET_COLORS.includes(color) && !customColors.includes(color.toLowerCase());
 
   const handleUndo = () => {
     const lines = undo();
@@ -83,7 +133,7 @@ export default function Toolbar() {
                 ? "bg-blue-600 text-white"
                 : "bg-dark-bg text-dark-muted hover:bg-dark-accent hover:text-dark-text"
             }`}
-            title={BRUSH_CONFIGS[brushType].name}
+            title={BRUSH_TOOLTIPS[brushType]}
           >
             {BrushIcons[brushType]}
           </button>
@@ -97,7 +147,7 @@ export default function Toolbar() {
                 ? "bg-blue-600 text-white"
                 : "bg-dark-bg text-dark-muted hover:bg-dark-accent hover:text-dark-text"
             }`}
-            title="Eraser"
+            title={BRUSH_TOOLTIPS.eraser}
           >
             {BrushIcons.eraser}
           </button>
@@ -109,6 +159,7 @@ export default function Toolbar() {
 
       {/* Color palette */}
       <div className="flex items-center gap-1">
+        {/* Default colors */}
         {PRESET_COLORS.map((presetColor) => (
           <button
             key={presetColor}
@@ -119,16 +170,125 @@ export default function Toolbar() {
                 : "border-transparent"
             }`}
             style={{ backgroundColor: presetColor }}
-            title={presetColor}
+            title={COLOR_NAMES[presetColor] || presetColor}
           />
         ))}
+        
+        {/* Custom colors */}
+        {customColors.length > 0 && (
+          <>
+            <div className="w-px h-5 bg-dark-accent/50 mx-0.5" />
+            {customColors.map((customColor) => (
+              <button
+                key={customColor}
+                onClick={() => setColor(customColor)}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  removeCustomColor(customColor);
+                }}
+                className={`w-6 h-6 rounded-full border-2 transition-transform hover:scale-110 group relative ${
+                  color.toLowerCase() === customColor
+                    ? "border-blue-400 scale-110"
+                    : "border-transparent"
+                }`}
+                style={{ backgroundColor: customColor }}
+                title={`${customColor} (right-click to remove)`}
+              />
+            ))}
+          </>
+        )}
+        
+        {/* Color picker button */}
+        <div className="relative" ref={colorMenuRef}>
+          <button
+            onClick={() => setShowColorMenu(!showColorMenu)}
+            className={`w-6 h-6 rounded-full border-2 border-dashed transition-all hover:scale-110 flex items-center justify-center
+              ${showColorMenu ? "border-blue-400" : "border-dark-muted hover:border-dark-text"}`}
+            style={{ 
+              background: isCustomColor 
+                ? `linear-gradient(135deg, ${color} 50%, transparent 50%)` 
+                : undefined 
+            }}
+            title="Color picker – Add custom colors"
+          >
+            <svg className="w-3.5 h-3.5 text-dark-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+            </svg>
+          </button>
+          
+          {/* Color picker dropdown */}
+          {showColorMenu && (
+            <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 p-3 bg-dark-surface rounded-lg shadow-xl border border-dark-accent z-50 min-w-[200px]">
+              {/* Color picker input */}
+              <div className="flex items-center gap-2 mb-3">
+                <input
+                  ref={colorInputRef}
+                  type="color"
+                  value={pickerColor}
+                  onChange={(e) => {
+                    setPickerColor(e.target.value);
+                    setColor(e.target.value);
+                  }}
+                  className="w-10 h-10 rounded cursor-pointer border-0 bg-transparent"
+                  title="Pick a color"
+                />
+                <div className="flex-1">
+                  <input
+                    type="text"
+                    value={pickerColor}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setPickerColor(val);
+                      if (/^#[0-9A-Fa-f]{6}$/.test(val)) {
+                        setColor(val);
+                      }
+                    }}
+                    className="w-full px-2 py-1 bg-dark-bg rounded text-dark-text text-sm font-mono"
+                    placeholder="#000000"
+                  />
+                </div>
+              </div>
+              
+              {/* Add to swatches button */}
+              <button
+                onClick={() => {
+                  addCustomColor(pickerColor);
+                  setShowColorMenu(false);
+                }}
+                disabled={PRESET_COLORS.includes(pickerColor.toLowerCase()) || customColors.includes(pickerColor.toLowerCase())}
+                className="w-full px-3 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-dark-accent disabled:text-dark-muted
+                           rounded text-white text-sm font-medium transition-colors disabled:cursor-not-allowed"
+              >
+                {customColors.includes(pickerColor.toLowerCase()) 
+                  ? "Already saved" 
+                  : PRESET_COLORS.includes(pickerColor.toLowerCase())
+                    ? "Default color"
+                    : "Add to swatches"}
+              </button>
+              
+              {/* Reset custom colors */}
+              {customColors.length > 0 && (
+                <button
+                  onClick={() => {
+                    resetCustomColors();
+                    setShowColorMenu(false);
+                  }}
+                  className="w-full mt-2 px-3 py-1.5 text-dark-muted hover:text-red-400 
+                             text-xs transition-colors"
+                >
+                  Clear custom colors ({customColors.length})
+                </button>
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Separator */}
       <div className="w-px h-8 bg-dark-accent flex-shrink-0" />
 
       {/* Stroke width */}
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2" title="Stroke Size – Adjust line thickness">
         <span className="text-dark-muted text-xs">Size:</span>
         <input
           type="range"
@@ -137,6 +297,7 @@ export default function Toolbar() {
           value={strokeWidth}
           onChange={(e) => setStrokeWidth(parseInt(e.target.value))}
           className="w-20 accent-blue-500"
+          title={`Stroke size: ${strokeWidth}px`}
         />
         <span className="text-dark-text text-xs w-5">{strokeWidth}</span>
       </div>
@@ -144,13 +305,17 @@ export default function Toolbar() {
       {/* Separator */}
       <div className="w-px h-8 bg-dark-accent flex-shrink-0" />
 
-      {/* Undo / Redo / Clear */}
+      {/* Undo / Redo / Clear - disabled when eraser is disabled (practice mode) */}
       <div className="flex items-center gap-1">
         <button
           onClick={handleUndo}
-          className="p-2 rounded-lg bg-dark-bg text-dark-muted hover:bg-dark-accent 
-                     hover:text-dark-text transition-colors"
-          title="Undo"
+          disabled={eraserDisabled}
+          className={`p-2 rounded-lg bg-dark-bg transition-colors
+            ${eraserDisabled 
+              ? "text-dark-muted/30 cursor-not-allowed" 
+              : "text-dark-muted hover:bg-dark-accent hover:text-dark-text"
+            }`}
+          title={eraserDisabled ? "Undo disabled (practice mode)" : "Undo – Revert last stroke (⌘Z)"}
         >
           <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
             <path d="M12.5 8c-2.65 0-5.05.99-6.9 2.6L2 7v9h9l-3.62-3.62c1.39-1.16 3.16-1.88 5.12-1.88 3.54 0 6.55 2.31 7.6 5.5l2.37-.78C21.08 11.03 17.15 8 12.5 8z" />
@@ -158,9 +323,13 @@ export default function Toolbar() {
         </button>
         <button
           onClick={handleRedo}
-          className="p-2 rounded-lg bg-dark-bg text-dark-muted hover:bg-dark-accent 
-                     hover:text-dark-text transition-colors"
-          title="Redo"
+          disabled={eraserDisabled}
+          className={`p-2 rounded-lg bg-dark-bg transition-colors
+            ${eraserDisabled 
+              ? "text-dark-muted/30 cursor-not-allowed" 
+              : "text-dark-muted hover:bg-dark-accent hover:text-dark-text"
+            }`}
+          title={eraserDisabled ? "Redo disabled (practice mode)" : "Redo – Restore undone stroke (⌘⇧Z)"}
         >
           <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
             <path d="M18.4 10.6C16.55 8.99 14.15 8 11.5 8c-4.65 0-8.58 3.03-9.96 7.22L3.9 16c1.05-3.19 4.05-5.5 7.6-5.5 1.95 0 3.73.72 5.12 1.88L13 16h9V7l-3.6 3.6z" />
@@ -168,11 +337,13 @@ export default function Toolbar() {
         </button>
         <button
           onClick={handleClear}
-          disabled={currentDrawingData.lines.length === 0}
-          className="p-2 rounded-lg bg-dark-bg text-dark-muted hover:bg-red-600/50 
-                     hover:text-red-300 disabled:opacity-50 disabled:cursor-not-allowed 
-                     transition-colors"
-          title="Clear drawing"
+          disabled={currentDrawingData.lines.length === 0 || eraserDisabled}
+          className={`p-2 rounded-lg bg-dark-bg transition-colors
+            ${eraserDisabled 
+              ? "text-dark-muted/30 cursor-not-allowed" 
+              : "text-dark-muted hover:bg-red-600/50 hover:text-red-300 disabled:opacity-50 disabled:cursor-not-allowed"
+            }`}
+          title={eraserDisabled ? "Clear disabled (practice mode)" : "Clear – Delete all strokes"}
         >
           <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
             <path d="M19 4h-3.5l-1-1h-5l-1 1H5v2h14M6 19a2 2 0 002 2h8a2 2 0 002-2V7H6v12z" />
