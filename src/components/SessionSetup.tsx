@@ -14,10 +14,13 @@ export default function SessionSetup() {
     allImages,
     imageOpacity,
     imageZoom,
+    markupEnabled,
     eraserDisabled,
+    isTimedMode,
     timerHidden,
     setImageOpacity,
     setImageZoom,
+    setMarkupEnabled,
     setEraserDisabled,
     setTimerHidden,
     startSession,
@@ -30,7 +33,7 @@ export default function SessionSetup() {
   } = useSessionStore();
 
   const { clearHistory } = useDrawingStore();
-  const { updateSettings } = useSettingsStore();
+  const { updateSettings, settings, setRememberSetupSettings } = useSettingsStore();
 
   const [previewImage, setPreviewImage] = useState<string | null>(null);
   const [previewImagePath, setPreviewImagePath] = useState<string | null>(null);
@@ -111,13 +114,16 @@ export default function SessionSetup() {
   };
 
   const handleBeginSession = async () => {
-    // Save settings before starting
-    await updateSettings({
-      imageOpacity,
-      imageZoom,
-      eraserDisabled,
-      timerHidden,
-    });
+    // Save settings before starting (only when Remember Current Settings is checked)
+    if (settings.rememberSetupSettings) {
+      await updateSettings({
+        imageOpacity,
+        imageZoom,
+        markupEnabled,
+        eraserDisabled,
+        timerHidden,
+      });
+    }
     
     if (includePreviewInSession && previewImagePath) {
       // Include preview image at the start, preserving any drawings
@@ -214,16 +220,16 @@ export default function SessionSetup() {
               </svg>
               Back
             </button>
-            {!timerHidden && (
+            {(isTimedMode && !timerHidden) && (
               <div className="text-dark-muted text-sm">
                 <span className="text-dark-text font-medium">{imageCount}</span> images • {durationText}
               </div>
             )}
           </div>
 
-          {/* Timer preview - respects Hide Timer setting */}
+          {/* Timer preview - hidden when Untimed or Hide Timer */}
           <div className="flex-1 max-w-md">
-            {!timerHidden ? (
+            {isTimedMode && !timerHidden ? (
               <div className="flex items-center gap-4">
                 {/* Progress bar preview */}
                 <div className="flex-1 h-2 bg-dark-bg rounded-full overflow-hidden">
@@ -258,7 +264,8 @@ export default function SessionSetup() {
               <div className="text-center">
                 <h1 className="text-lg font-bold text-dark-text">Session Setup</h1>
                 <p className="text-dark-muted text-sm">
-                  {imageCount} images • {durationText} • Timer hidden
+                  {imageCount} images
+                  {isTimedMode ? ` • ${durationText} • Timer hidden` : " • Untimed — advance manually"}
                 </p>
               </div>
             )}
@@ -277,7 +284,7 @@ export default function SessionSetup() {
             {/* Save preview button */}
             <button
               onClick={handleSavePreview}
-              disabled={isSaving || currentDrawingData.lines.length === 0}
+              disabled={isSaving || !markupEnabled || currentDrawingData.lines.length === 0}
               className="flex items-center gap-2 px-3 py-1.5 rounded-lg transition-colors
                 text-dark-muted hover:text-dark-text hover:bg-dark-accent
                 disabled:opacity-50 disabled:cursor-not-allowed"
@@ -330,7 +337,7 @@ export default function SessionSetup() {
       <div className="flex-1 flex overflow-hidden relative">
         <div
           ref={handleContainerRef}
-          className="flex-1 relative overflow-hidden flex items-center justify-center"
+          className="flex-1 relative overflow-auto flex items-center justify-center min-h-0"
         >
           {isLoading ? (
             <div className="flex items-center justify-center">
@@ -342,12 +349,10 @@ export default function SessionSetup() {
           ) : previewImage ? (
             /* Zoom wrapper - same as SessionView */
             <div 
-              className="relative transition-all duration-200"
+              className="relative transition-all duration-200 min-w-0 min-h-0"
               style={{ 
                 width: `${imageZoom}%`,
                 height: `${imageZoom}%`,
-                maxWidth: '100%',
-                maxHeight: '100%',
               }}
             >
               {/* Image layer */}
@@ -361,8 +366,8 @@ export default function SessionSetup() {
                 />
               </div>
 
-              {/* Drawing canvas overlay */}
-              {imageDimensions && containerDimensions && canvasReady && (
+              {/* Drawing canvas overlay - only when markup enabled */}
+              {markupEnabled && imageDimensions && containerDimensions && canvasReady && (
                 <div
                   className="absolute pointer-events-auto"
                   style={{
@@ -392,7 +397,9 @@ export default function SessionSetup() {
           {!settingsVisible && (
             <div className="absolute bottom-4 left-1/2 -translate-x-1/2 px-4 py-2 bg-dark-surface/90 rounded-lg">
               <p className="text-dark-muted text-sm">
-                Practice drawing here • Click <span className="text-dark-text">Settings</span> to adjust display
+                {markupEnabled
+                  ? "Click Settings to adjust display"
+                  : "Markup disabled • View reference only"}
               </p>
             </div>
           )}
@@ -475,7 +482,7 @@ export default function SessionSetup() {
             <input
               type="range"
               min="25"
-              max="100"
+              max="200"
               value={imageZoom}
               onChange={(e) => setImageZoom(parseInt(e.target.value))}
               className="w-full h-2 bg-dark-bg rounded-lg appearance-none cursor-pointer
@@ -488,7 +495,7 @@ export default function SessionSetup() {
                          [&::-webkit-slider-thumb]:hover:bg-blue-400"
             />
             <div className="flex justify-between mt-2">
-              {[25, 50, 75, 100].map((val) => (
+              {[25, 50, 75, 100, 150, 200].map((val) => (
                 <button
                   key={val}
                   onClick={() => setImageZoom(val)}
@@ -503,44 +510,63 @@ export default function SessionSetup() {
               ))}
             </div>
             <p className="text-dark-muted text-xs mt-2">
-              Smaller size leaves more room for drawing around the reference
+              Smaller size leaves more room; zoom in for detail work
             </p>
           </div>
 
-          {/* Eraser toggle */}
+          {/* Markup Controls - parent section */}
           <div className="mb-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <label className="text-dark-text font-medium">Practice Mode</label>
-                <p className="text-dark-muted text-xs mt-1">
-                  Disable eraser, undo, and clear
-                </p>
-              </div>
+            <div className="flex items-center justify-between mb-3">
+              <label className="text-dark-text font-medium">Markup Controls</label>
               <button
-                onClick={() => setEraserDisabled(!eraserDisabled)}
+                onClick={() => setMarkupEnabled(!markupEnabled)}
                 className={`relative w-11 h-6 rounded-full transition-colors
-                  ${eraserDisabled ? "bg-red-600" : "bg-dark-accent"}`}
+                  ${markupEnabled ? "bg-blue-600" : "bg-dark-accent"}`}
               >
                 <span
                   className={`absolute left-0.5 top-0.5 w-5 h-5 bg-white rounded-full transition-transform
-                    ${eraserDisabled ? "translate-x-5" : "translate-x-0"}`}
+                    ${markupEnabled ? "translate-x-5" : "translate-x-0"}`}
                 />
               </button>
             </div>
+            <div className={`rounded-lg border border-dark-accent p-3 transition-opacity ${!markupEnabled ? "opacity-50" : ""}`}>
+              <div className="flex items-center justify-between">
+                <div>
+                  <label className={`font-medium ${!markupEnabled ? "text-dark-muted" : "text-dark-text"}`}>Erasing</label>
+                  <p className="text-dark-muted text-xs mt-1">
+                    Enable eraser, undo, and clear
+                  </p>
+                </div>
+                <button
+                  onClick={() => markupEnabled && setEraserDisabled(!eraserDisabled)}
+                  disabled={!markupEnabled}
+                  className={`relative w-11 h-6 rounded-full transition-colors
+                    ${!markupEnabled ? "cursor-not-allowed opacity-50" : ""}
+                    ${!eraserDisabled ? "bg-blue-600" : "bg-dark-accent"}`}
+                >
+                  <span
+                    className={`absolute left-0.5 top-0.5 w-5 h-5 bg-white rounded-full transition-transform
+                      ${!eraserDisabled ? "translate-x-5" : "translate-x-0"}`}
+                  />
+                </button>
+              </div>
+            </div>
           </div>
 
-          {/* Timer visibility toggle */}
-          <div className="mb-6">
+          {/* Timer visibility toggle - disabled when Untimed */}
+          <div className={`mb-6 transition-opacity ${!isTimedMode ? "opacity-50" : ""}`}>
             <div className="flex items-center justify-between">
               <div>
-                <label className="text-dark-text font-medium">Hide Timer</label>
+                <label className={`font-medium ${!isTimedMode ? "text-dark-muted" : "text-dark-text"}`}>Hide Timer</label>
                 <p className="text-dark-muted text-xs mt-1">
-                  Draw without time pressure
+                  {isTimedMode ? "Draw without time pressure" : "No timer in untimed mode"}
                 </p>
               </div>
               <button
-                onClick={() => setTimerHidden(!timerHidden)}
+                onClick={() => isTimedMode && setTimerHidden(!timerHidden)}
+                disabled={!isTimedMode}
                 className={`relative w-11 h-6 rounded-full transition-colors
+                  ${!isTimedMode ? "cursor-not-allowed" : ""}
                   ${timerHidden ? "bg-blue-600" : "bg-dark-accent"}`}
               >
                 <span
@@ -598,6 +624,18 @@ export default function SessionSetup() {
             </div>
           </div>
 
+          {/* Remember Current Settings */}
+          <label className="flex items-center gap-3 mb-6 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={settings.rememberSetupSettings === true}
+              onChange={(e) => setRememberSetupSettings(e.target.checked)}
+              className="w-4 h-4 rounded border-dark-accent bg-dark-bg text-blue-600 
+                         focus:ring-blue-500 focus:ring-offset-0"
+            />
+            <span className="text-dark-text text-sm">Remember current settings</span>
+          </label>
+
           {/* Begin button */}
           <button
             onClick={handleBeginSession}
@@ -614,10 +652,12 @@ export default function SessionSetup() {
         </div>
       </div>
 
-      {/* Bottom toolbar - same as SessionView */}
-      <div className="flex-shrink-0 border-t border-dark-accent">
-        <Toolbar />
-      </div>
+      {/* Bottom toolbar - only when markup enabled */}
+      {markupEnabled && (
+        <div className="flex-shrink-0 border-t border-dark-accent">
+          <Toolbar />
+        </div>
+      )}
     </div>
   );
 }

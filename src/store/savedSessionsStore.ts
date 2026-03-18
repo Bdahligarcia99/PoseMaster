@@ -29,14 +29,12 @@ export interface SavedSession {
     timerDuration: number;
     breakDuration: number;
     imageOpacity: number;
+    isTimedMode?: boolean; // true = Timed, false = Untimed (optional for backward compat)
+    markupEnabled?: boolean; // true = had drawing tools, false = view-only (optional for backward compat)
   };
   
-  // Progress
-  currentImageIndex: number;
-  totalImages: number;
-  imageOrder: string[]; // The shuffled order of images
-  
-  // Drawings keyed by image path
+  // Images practiced (excludes skipped). Drawings only for images with markup.
+  imageOrder: string[];
   drawings: Record<string, ImageDrawing>;
 }
 
@@ -120,8 +118,10 @@ export const useSavedSessionsStore = create<SavedSessionsState>((set, get) => ({
         if (entry.name?.endsWith(".json")) {
           try {
             const content = await readTextFile(`${sessionsDir}/${entry.name}`);
-            const session = JSON.parse(content) as SavedSession;
-            sessions.push(session);
+            const raw = JSON.parse(content);
+            // Migration: strip removed fields (currentImageIndex, totalImages)
+            const { currentImageIndex, totalImages, ...session } = raw;
+            sessions.push(session as SavedSession);
           } catch (err) {
             console.error(`Error loading session ${entry.name}:`, err);
           }
@@ -146,13 +146,15 @@ export const useSavedSessionsStore = create<SavedSessionsState>((set, get) => ({
     const now = Date.now();
     const sessionNumber = get().getNextSessionNumber();
     
+    // Strip removed fields if caller passes them (backward compat)
+    const { currentImageIndex, totalImages, ...safeData } = sessionData as Record<string, unknown>;
     const session: SavedSession = {
-      ...sessionData,
+      ...safeData,
       id,
-      name: sessionData.name?.trim() || formatSessionName(sessionNumber),
+      name: (sessionData.name as string)?.trim() || formatSessionName(sessionNumber),
       createdAt: now,
       lastAccessedAt: now,
-    };
+    } as SavedSession;
     
     // Save to file
     const filePath = `${sessionsDir}/${id}.json`;
@@ -173,9 +175,11 @@ export const useSavedSessionsStore = create<SavedSessionsState>((set, get) => ({
     
     if (sessionIndex === -1) return;
     
+    // Strip removed fields if present in updates (migration)
+    const { currentImageIndex, totalImages, ...safeUpdates } = updates as Record<string, unknown>;
     const updatedSession: SavedSession = {
       ...state.sessions[sessionIndex],
-      ...updates,
+      ...safeUpdates,
       lastAccessedAt: Date.now(),
     };
     

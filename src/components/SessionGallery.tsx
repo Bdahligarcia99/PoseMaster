@@ -7,7 +7,7 @@ export default function SessionGallery() {
     viewedImages,
     galleryIndex,
     setGalleryIndex,
-    resumedSessionName,
+    viewedSessionName,
     imageOpacity,
     isViewingOnly,
     exitGallery,
@@ -38,6 +38,7 @@ export default function SessionGallery() {
 
   const currentImage = viewedImages[galleryIndex];
   const hasDrawings = currentImage?.hasMarkup || false;
+  const hasAnyDrawings = viewedImages.some((img) => img.hasMarkup);
   const drawingData = currentImage?.drawingData;
 
   // Update image dimensions when image loads or window resizes
@@ -192,14 +193,15 @@ export default function SessionGallery() {
 
         <div className="text-center">
           <h1 className="text-dark-text font-medium">
-            {resumedSessionName || "Session Gallery"}
+            {viewedSessionName || "Session Gallery"}
           </h1>
           <p className="text-dark-muted text-sm">
             {galleryIndex + 1} of {viewedImages.length} images
           </p>
         </div>
 
-        {/* Layer visibility toggle */}
+        {/* Layer visibility toggle - only when session has drawings */}
+        {hasAnyDrawings && (
         <button
           onClick={() => setShowDrawings(!showDrawings)}
           className={`flex items-center gap-2 px-3 py-1.5 rounded-lg transition-colors
@@ -222,6 +224,7 @@ export default function SessionGallery() {
           )}
           <span className="text-sm font-medium">Drawings</span>
         </button>
+        )}
       </div>
 
       {/* Main viewport */}

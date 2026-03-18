@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { useSessionStore } from "../store/sessionStore";
 
 export default function Timer() {
+  const isTimedMode = useSessionStore((state) => state.isTimedMode);
   const timerDuration = useSessionStore((state) => state.timerDuration);
   const breakDuration = useSessionStore((state) => state.breakDuration);
   const isTimerPaused = useSessionStore((state) => state.isTimerPaused);
@@ -18,13 +19,16 @@ export default function Timer() {
   const [breakTimeRemaining, setBreakTimeRemaining] = useState(breakDuration);
   const isAdvancingRef = useRef(false);
 
+  // Untimed mode: no countdown, user advances manually
+  const showTimer = isTimedMode && !timerHidden;
+
   // Reset timer when image changes (not during break)
   useEffect(() => {
-    if (!isOnBreak) {
+    if (!isOnBreak && isTimedMode) {
       setTimeRemaining(timerDuration);
       isAdvancingRef.current = false;
     }
-  }, [timerDuration, currentImageIndex, isOnBreak]);
+  }, [timerDuration, currentImageIndex, isOnBreak, isTimedMode]);
 
   // Reset break timer when break starts
   useEffect(() => {
@@ -33,9 +37,9 @@ export default function Timer() {
     }
   }, [isOnBreak, breakDuration]);
 
-  // Main image timer countdown
+  // Main image timer countdown (skip when untimed)
   useEffect(() => {
-    if (isTimerPaused || isOnBreak) return;
+    if (!isTimedMode || isTimerPaused || isOnBreak) return;
 
     const interval = setInterval(() => {
       setTimeRemaining((prev) => {
@@ -68,11 +72,11 @@ export default function Timer() {
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [isTimerPaused, isOnBreak, timerDuration, breakDuration, currentImageIndex, images.length, endSession, startBreak]);
+  }, [isTimedMode, isTimerPaused, isOnBreak, timerDuration, breakDuration, currentImageIndex, images.length, endSession, startBreak]);
 
-  // Break countdown
+  // Break countdown (only in timed mode)
   useEffect(() => {
-    if (!isOnBreak || isTimerPaused) return;
+    if (!isTimedMode || !isOnBreak || isTimerPaused) return;
 
     const interval = setInterval(() => {
       setBreakTimeRemaining((prev) => {
@@ -90,7 +94,7 @@ export default function Timer() {
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [isOnBreak, isTimerPaused, endBreak]);
+  }, [isTimedMode, isOnBreak, isTimerPaused, endBreak]);
 
   // Reset timer when manually skipping
   const handleSkip = useCallback(() => {
@@ -101,21 +105,25 @@ export default function Timer() {
       isAdvancingRef.current = false;
       return;
     }
-    
+
     // Check if this is the last image
     if (currentImageIndex >= images.length - 1) {
       endSession();
       return;
     }
-    
-    // Start break if enabled, otherwise go to next image
+
+    // Untimed: always advance immediately. Timed: start break if enabled, else advance
+    if (!isTimedMode) {
+      useSessionStore.getState().nextImage();
+      return;
+    }
     if (breakDuration > 0) {
       startBreak();
     } else {
       useSessionStore.getState().nextImage();
     }
     setTimeRemaining(timerDuration);
-  }, [timerDuration, breakDuration, currentImageIndex, images.length, endSession, isOnBreak, startBreak, endBreak]);
+  }, [isTimedMode, timerDuration, breakDuration, currentImageIndex, images.length, endSession, isOnBreak, startBreak, endBreak]);
 
   // Format time as MM:SS
   const formatTime = (seconds: number) => {
@@ -134,12 +142,12 @@ export default function Timer() {
   return (
     <div className="flex items-center gap-4">
       {/* Break indicator - only show if timer is visible */}
-      {!timerHidden && isOnBreak && (
+      {showTimer && isOnBreak && (
         <span className="text-yellow-400 font-medium text-sm">BREAK</span>
       )}
       
-      {/* Progress bar - hide if timer hidden */}
-      {!timerHidden && (
+      {/* Progress bar - hide if timer hidden or untimed */}
+      {showTimer && (
         <div className="flex-1 h-2 bg-dark-surface rounded-full overflow-hidden">
           <div
             className={`h-full ${isOnBreak ? "bg-yellow-500" : "bg-blue-500"}`}
@@ -148,8 +156,8 @@ export default function Timer() {
         </div>
       )}
 
-      {/* Time display - hide if timer hidden */}
-      {!timerHidden && (
+      {/* Time display - hide if timer hidden or untimed */}
+      {showTimer && (
         <span className={`font-mono text-lg min-w-[60px] text-right ${
           isOnBreak ? "text-yellow-400" : "text-dark-text"
         }`}>
@@ -157,10 +165,11 @@ export default function Timer() {
         </span>
       )}
 
-      {/* Spacer when timer is hidden to push buttons to the right */}
-      {timerHidden && <div className="flex-1" />}
+      {/* Spacer when timer is hidden or untimed to push buttons to the right */}
+      {!showTimer && <div className="flex-1" />}
 
-      {/* Pause/Resume button */}
+      {/* Pause/Resume button - only in timed mode */}
+      {isTimedMode && (
       <button
         onClick={toggleTimerPause}
         className="p-2 rounded-lg bg-dark-surface hover:bg-dark-accent transition-colors"
@@ -176,8 +185,9 @@ export default function Timer() {
           </svg>
         )}
       </button>
+      )}
 
-      {/* Skip button */}
+      {/* Skip / Next button */}
       <button
         onClick={handleSkip}
         className="p-2 rounded-lg bg-dark-surface hover:bg-dark-accent transition-colors"

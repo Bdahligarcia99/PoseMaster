@@ -9,17 +9,24 @@ interface SavedFolder {
   addedAt: number;
 }
 
+export type ImageCountMode = "all" | "specific";
+
 interface AppSettings {
+  isTimedMode: boolean; // true = Timed, false = Untimed
   timerDuration: number;
   breakDuration: number;
   lastSelectedFolder: string | null; // Deprecated, kept for migration
   lastSelectedFolders: string[]; // Multiple folder selection
-  maxImages: number | null;
+  imageCountMode: ImageCountMode; // all | specific
+  maxImages: number | null; // Used when imageCountMode is "specific"
   imageOpacity: number;
   imageZoom: number;
+  markupEnabled: boolean;
   eraserDisabled: boolean;
   timerHidden: boolean;
   customColors: string[]; // User's custom color swatches
+  rememberHomeSettings: boolean; // Include New Session tab settings when creating preset
+  rememberSetupSettings: boolean; // Include Session Setup settings when creating preset
 }
 
 interface SettingsState {
@@ -45,19 +52,28 @@ interface SettingsState {
   addCustomColor: (color: string) => Promise<void>;
   removeCustomColor: (color: string) => Promise<void>;
   resetCustomColors: () => Promise<void>;
+  // Remember settings for preset
+  setRememberHomeSettings: (value: boolean) => Promise<void>;
+  setRememberSetupSettings: (value: boolean) => Promise<void>;
+  clearRememberFlags: () => Promise<void>;
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
+  isTimedMode: true,
   timerDuration: 30,
   breakDuration: 3,
   lastSelectedFolder: null,
   lastSelectedFolders: [],
+  imageCountMode: "all",
   maxImages: 10,
   imageOpacity: 100,
   imageZoom: 100,
+  markupEnabled: true,
   eraserDisabled: false,
   timerHidden: false,
   customColors: [],
+  rememberHomeSettings: false,
+  rememberSetupSettings: false,
 };
 
 const SETTINGS_FILE = "settings.json";
@@ -99,7 +115,26 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         if (loadedSettings.lastSelectedFolder && (!loadedSettings.lastSelectedFolders || loadedSettings.lastSelectedFolders.length === 0)) {
           loadedSettings.lastSelectedFolders = [loadedSettings.lastSelectedFolder];
         }
-        
+        // Migrate: add imageCountMode if missing (infer from maxImages)
+        if (!loadedSettings.imageCountMode) {
+          loadedSettings.imageCountMode = loadedSettings.maxImages === null ? "all" : "specific";
+        }
+        // Migrate: remove "continuous" mode (deprecated) -> default to "all"
+        if (loadedSettings.imageCountMode === "continuous") {
+          loadedSettings.imageCountMode = "all";
+        }
+        // Migrate: add isTimedMode if missing
+        if (loadedSettings.isTimedMode === undefined) {
+          loadedSettings.isTimedMode = true;
+        }
+        // Migrate: add markupEnabled if missing
+        if (loadedSettings.markupEnabled === undefined) {
+          loadedSettings.markupEnabled = true;
+        }
+        // Remember flags always load as false (never persist as checked)
+        loadedSettings.rememberHomeSettings = false;
+        loadedSettings.rememberSetupSettings = false;
+
         set({
           savedFolders: data.savedFolders || [],
           settings: loadedSettings,
@@ -238,6 +273,31 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   resetCustomColors: async () => {
     set((state) => ({
       settings: { ...state.settings, customColors: [] },
+    }));
+    await get().saveSettings();
+  },
+
+  setRememberHomeSettings: async (value) => {
+    set((state) => ({
+      settings: { ...state.settings, rememberHomeSettings: value },
+    }));
+    await get().saveSettings();
+  },
+
+  setRememberSetupSettings: async (value) => {
+    set((state) => ({
+      settings: { ...state.settings, rememberSetupSettings: value },
+    }));
+    await get().saveSettings();
+  },
+
+  clearRememberFlags: async () => {
+    set((state) => ({
+      settings: {
+        ...state.settings,
+        rememberHomeSettings: false,
+        rememberSetupSettings: false,
+      },
     }));
     await get().saveSettings();
   },

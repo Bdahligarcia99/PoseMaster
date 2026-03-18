@@ -62,9 +62,10 @@ export default function ImageViewer({ imagePath, onDimensionsChange, opacity }: 
     const imgHeight = img.naturalHeight;
 
     // Calculate scaled dimensions to fit container while maintaining aspect ratio
+    // Allow scaling up when zoomed beyond 100%
     const widthRatio = containerWidth / imgWidth;
     const heightRatio = containerHeight / imgHeight;
-    const scale = Math.min(widthRatio, heightRatio, 1); // Don't scale up
+    const scale = Math.min(widthRatio, heightRatio);
 
     const displayWidth = Math.floor(imgWidth * scale);
     const displayHeight = Math.floor(imgHeight * scale);

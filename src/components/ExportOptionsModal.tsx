@@ -39,7 +39,14 @@ export default function ExportOptionsModal({
 
   const selectedViewedImages = viewedImages.filter((img) => selectedImages.has(img.path));
   const imagesWithMarkup = selectedViewedImages.filter((img) => img.hasMarkup);
-  const imagesToExport = includeWithoutMarkup ? selectedViewedImages : imagesWithMarkup;
+  const hasAnyDrawings = viewedImages.some((img) => img.hasMarkup);
+  // Sessions without drawings: export reference images only (no overlay)
+  const imagesToExport =
+    hasAnyDrawings
+      ? includeWithoutMarkup
+        ? selectedViewedImages
+        : imagesWithMarkup
+      : selectedViewedImages;
 
   const handleExport = async () => {
     if (imagesToExport.length === 0) return;
@@ -434,28 +441,34 @@ export default function ExportOptionsModal({
             />
             <span className="text-dark-text">Apply image opacity ({imageOpacity}%)</span>
           </label>
-          <label className="flex items-center gap-3 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={includeWithoutMarkup}
-              onChange={(e) => setIncludeWithoutMarkup(e.target.checked)}
-              disabled={isExporting}
-              className="w-5 h-5 rounded bg-dark-bg border-dark-accent text-blue-600 
-                         focus:ring-blue-500 focus:ring-offset-dark-bg"
-            />
-            <span className="text-dark-text">Include images without drawings</span>
-          </label>
+          {hasAnyDrawings && (
+            <label className="flex items-center gap-3 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={includeWithoutMarkup}
+                onChange={(e) => setIncludeWithoutMarkup(e.target.checked)}
+                disabled={isExporting}
+                className="w-5 h-5 rounded bg-dark-bg border-dark-accent text-blue-600 
+                           focus:ring-blue-500 focus:ring-offset-dark-bg"
+              />
+              <span className="text-dark-text">Include images without drawings</span>
+            </label>
+          )}
         </div>
 
         {/* Summary */}
         <div className="bg-dark-bg rounded-lg p-3 mb-6">
           <p className="text-dark-muted text-sm">
             <span className="text-dark-text font-medium">{imagesToExport.length}</span> images will be exported
-            {imagesWithMarkup.length !== selectedViewedImages.length && (
-              <span className="ml-1">
-                ({imagesWithMarkup.length} with drawings)
-              </span>
-            )}
+            {hasAnyDrawings
+              ? imagesWithMarkup.length !== selectedViewedImages.length && (
+                  <span className="ml-1">
+                    ({imagesWithMarkup.length} with drawings)
+                  </span>
+                )
+              : (
+                  <span className="ml-1">(reference images only)</span>
+                )}
           </p>
         </div>
 

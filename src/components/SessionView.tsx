@@ -18,19 +18,21 @@ export default function SessionView() {
     endSession,
     resetSession,
     isOnBreak,
+    isTimedMode,
+    nextImage,
     folderPath,
     folderName,
     timerDuration,
     breakDuration,
     imageOpacity,
     imageZoom,
-    resumedSessionId,
-    resumedSessionName,
+    markupEnabled,
+    eraserDisabled,
     currentDrawingData,
     saveCurrentImageDrawing,
     skipCurrentImage,
   } = useSessionStore();
-  const { saveSession, updateSession } = useSavedSessionsStore();
+  const { saveSession } = useSavedSessionsStore();
 
   const [imageDimensions, setImageDimensions] = useState<{ width: number; height: number } | null>(
     null
@@ -41,8 +43,29 @@ export default function SessionView() {
   } | null>(null);
   const [canvasReady, setCanvasReady] = useState(false);
   const [showSaveModal, setShowSaveModal] = useState(false);
+  const [showEndConfirmModal, setShowEndConfirmModal] = useState(false);
 
   const currentImage = images[currentImageIndex];
+
+  const hasViewedImages = viewedImages.length > 0;
+
+  const handleEndSessionRequest = useCallback(() => {
+    if (!hasViewedImages) {
+      resetSession();
+      return;
+    }
+    setShowEndConfirmModal(true);
+  }, [hasViewedImages, resetSession]);
+
+  const handleExitWithoutSaving = () => {
+    setShowEndConfirmModal(false);
+    resetSession();
+  };
+
+  const handleSaveAndExitFromConfirm = () => {
+    setShowEndConfirmModal(false);
+    setShowSaveModal(true);
+  };
 
   // Prevent display sleep during session
   useEffect(() => {
@@ -82,6 +105,15 @@ export default function SessionView() {
     }
   }, []);
 
+  // Advance to next image (or end session if on last)
+  const handleNextImage = useCallback(() => {
+    if (currentImageIndex >= images.length - 1) {
+      endSession();
+    } else {
+      nextImage();
+    }
+  }, [currentImageIndex, images.length, endSession, nextImage]);
+
   // Keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -91,13 +123,17 @@ export default function SessionView() {
       }
 
       switch (e.key) {
-        case " ": // Space to pause/resume
+        case " ": // Space: pause/resume (timed) or next image (untimed)
           e.preventDefault();
-          useSessionStore.getState().toggleTimerPause();
+          if (useSessionStore.getState().isTimedMode) {
+            useSessionStore.getState().toggleTimerPause();
+          } else {
+            handleNextImage();
+          }
           break;
-        case "ArrowRight": // Right arrow to skip
+        case "ArrowRight": // Right arrow to advance
           e.preventDefault();
-          useSessionStore.getState().nextImage();
+          handleNextImage();
           break;
         case "ArrowLeft": // Left arrow to go back
           e.preventDefault();
@@ -110,14 +146,14 @@ export default function SessionView() {
           break;
         case "Escape": // Escape to end session
           e.preventDefault();
-          endSession();
+          handleEndSessionRequest();
           break;
       }
     };
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [endSession]);
+  }, [handleEndSessionRequest, handleNextImage]);
 
   // Save and exit handler
   const handleSaveAndExit = async (name: string) => {
@@ -127,50 +163,38 @@ export default function SessionView() {
     // Get updated viewedImages (need to get fresh state after save)
     const state = useSessionStore.getState();
     
-    // Build drawings record from viewedImages including current
-    const drawings: Record<string, ImageDrawing> = {};
-    
-    // Add all viewed images with drawings
-    for (const viewed of state.viewedImages) {
-      if (viewed.drawingData && viewed.drawingData.lines.length > 0) {
-        drawings[viewed.path] = {
-          imagePath: viewed.path,
-          drawingData: viewed.drawingData,
-          savedAt: viewed.viewedAt,
-        };
-      }
-    }
-    
-    // Also add current drawing if it has content and isn't already saved
-    if (currentDrawingData.lines.length > 0 && !drawings[currentImage]) {
-      drawings[currentImage] = {
-        imagePath: currentImage,
-        drawingData: currentDrawingData,
-        savedAt: Date.now(),
-      };
-    }
+    // Only include images user actually practiced on (skipped images excluded)
+    const imageOrder = state.viewedImages.map((v) => v.path);
 
-    if (resumedSessionId) {
-      // Update existing session
-      await updateSession(resumedSessionId, {
-        name: name || resumedSessionName || undefined,
-        currentImageIndex,
-        drawings,
-        settings: { timerDuration, breakDuration, imageOpacity },
-      });
-    } else {
-      // Create new session
-      await saveSession({
+    // If markup was disabled, save imageOrder only (empty drawings)
+    const drawings: Record<string, ImageDrawing> = !markupEnabled ? {} : (() => {
+      const out: Record<string, ImageDrawing> = {};
+      for (const viewed of state.viewedImages) {
+        if (viewed.drawingData && viewed.drawingData.lines.length > 0) {
+          out[viewed.path] = {
+            imagePath: viewed.path,
+            drawingData: viewed.drawingData,
+            savedAt: viewed.viewedAt,
+          };
+        }
+      }
+      return out;
+    })();
+
+    await saveSession({
         name,
         folderPath: folderPath || "",
         folderName: folderName || "Unknown",
-        settings: { timerDuration, breakDuration, imageOpacity },
-        currentImageIndex,
-        totalImages: images.length,
-        imageOrder: images,
+        settings: {
+          timerDuration,
+          breakDuration,
+          imageOpacity,
+          isTimedMode,
+          markupEnabled,
+        },
+        imageOrder,
         drawings,
       });
-    }
 
     // Reset and go back to home
     resetSession();
@@ -184,8 +208,45 @@ export default function SessionView() {
         isOpen={showSaveModal}
         onClose={() => setShowSaveModal(false)}
         onSave={handleSaveAndExit}
-        defaultName={resumedSessionName || undefined}
+        defaultName={undefined}
       />
+
+      {/* End Session confirmation modal */}
+      {showEndConfirmModal && (
+        <div
+          className="fixed inset-0 bg-black/70 flex items-center justify-center z-50"
+          onClick={() => setShowEndConfirmModal(false)}
+        >
+          <div
+            className="bg-dark-surface rounded-xl p-6 max-w-sm w-full mx-4 shadow-xl border border-dark-accent"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <p className="text-dark-text font-medium mb-4">
+              Would you like to save this session?
+            </p>
+            <div className="flex flex-col gap-2">
+              <button
+                onClick={handleSaveAndExitFromConfirm}
+                className="w-full px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-white font-medium transition-colors"
+              >
+                Save & Exit
+              </button>
+              <button
+                onClick={handleExitWithoutSaving}
+                className="w-full px-4 py-2 bg-dark-accent hover:bg-dark-bg rounded-lg text-dark-text font-medium transition-colors"
+              >
+                Exit Without Saving
+              </button>
+              <button
+                onClick={() => setShowEndConfirmModal(false)}
+                className="w-full px-4 py-2 bg-dark-bg hover:bg-dark-surface rounded-lg text-dark-muted font-medium transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Top bar */}
       <div className="flex-shrink-0 px-4 py-3 bg-dark-surface border-b border-dark-accent">
@@ -212,9 +273,9 @@ export default function SessionView() {
             </button>
           </div>
 
-          {/* Timer */}
-          <div className="flex-1 max-w-md">
-            <Timer />
+          {/* Timer - only in timed mode; spacer when untimed */}
+          <div className="flex-1 max-w-md flex items-center">
+            {isTimedMode ? <Timer /> : <div className="flex-1" />}
           </div>
 
           {/* Session buttons */}
@@ -230,7 +291,7 @@ export default function SessionView() {
               Save & Exit
             </button>
             <button
-              onClick={endSession}
+              onClick={handleEndSessionRequest}
               className="px-4 py-2 bg-dark-accent hover:bg-red-600/80 rounded-lg text-dark-text 
                          hover:text-white font-medium transition-colors"
             >
@@ -243,16 +304,14 @@ export default function SessionView() {
       {/* Main content area */}
       <div
         ref={handleContainerRef}
-        className="flex-1 relative overflow-hidden flex items-center justify-center"
+        className="flex-1 relative overflow-auto flex items-center justify-center min-h-0"
       >
         {/* Zoom wrapper - contains both image and canvas */}
         <div 
-          className="relative transition-all duration-200"
+          className="relative transition-all duration-200 min-w-0 min-h-0"
           style={{ 
             width: `${imageZoom}%`,
             height: `${imageZoom}%`,
-            maxWidth: '100%',
-            maxHeight: '100%',
           }}
         >
           {/* Image layer */}
@@ -267,8 +326,8 @@ export default function SessionView() {
             />
           </div>
 
-          {/* Drawing canvas overlay */}
-          {imageDimensions && containerDimensions && canvasReady && !isOnBreak && (
+          {/* Drawing canvas overlay - only when markup enabled */}
+          {markupEnabled && imageDimensions && containerDimensions && canvasReady && !isOnBreak && (
             <div
               className="absolute pointer-events-auto"
               style={{
@@ -289,8 +348,8 @@ export default function SessionView() {
           )}
         </div>
 
-        {/* Break overlay */}
-        {isOnBreak && (
+        {/* Break overlay - only in timed mode */}
+        {isTimedMode && isOnBreak && (
           <div className="absolute inset-0 bg-dark-bg/90 flex items-center justify-center z-10">
             <div className="text-center">
               <div className="text-6xl mb-4">🎨</div>
@@ -302,18 +361,45 @@ export default function SessionView() {
             </div>
           </div>
         )}
+
+        {/* Prominent Next Image button - untimed mode only */}
+        {!isTimedMode && (
+          <button
+            onClick={handleNextImage}
+            className="absolute bottom-8 right-8 px-8 py-4 bg-blue-600 hover:bg-blue-700 
+                       rounded-xl text-white font-semibold text-lg shadow-lg shadow-blue-900/30
+                       flex items-center gap-3 transition-colors z-10"
+            title="Next image (→)"
+          >
+            Next Image
+            <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 24 24">
+              <path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z" />
+            </svg>
+          </button>
+        )}
       </div>
 
-      {/* Bottom toolbar */}
-      <div className="flex-shrink-0 border-t border-dark-accent">
-        <Toolbar />
-      </div>
+      {/* Bottom toolbar - only when markup enabled */}
+      {markupEnabled && (
+        <div className="flex-shrink-0 border-t border-dark-accent">
+          <Toolbar />
+        </div>
+      )}
 
       {/* Keyboard shortcuts hint */}
       <div className="absolute bottom-16 left-4 text-dark-muted text-xs opacity-50">
-        <span className="mr-3">Space: Pause</span>
-        <span className="mr-3">← →: Navigate</span>
-        <span className="mr-3">X: Skip</span>
+        {isTimedMode ? (
+          <>
+            <span className="mr-3">Space: Pause</span>
+            <span className="mr-3">← →: Navigate</span>
+            <span className="mr-3">X: Skip</span>
+          </>
+        ) : (
+          <>
+            <span className="mr-3">→ or Space: Next</span>
+            <span className="mr-3">←: Back</span>
+          </>
+        )}
         <span>Esc: End</span>
       </div>
     </div>

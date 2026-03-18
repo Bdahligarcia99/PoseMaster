@@ -2,10 +2,13 @@ import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { useSessionStore } from "../store/sessionStore";
-import { useSettingsStore } from "../store/settingsStore";
+import { useSettingsStore, ImageCountMode } from "../store/settingsStore";
 import { useSavedSessionsStore, SavedSession } from "../store/savedSessionsStore";
+import { usePresetsStore, Preset, PresetMode } from "../store/presetsStore";
 import TimerPresets from "./TimerPresets";
 import PreviousSessions from "./PreviousSessions";
+import ModeSelection, { PracticeMode } from "./ModeSelection";
+import TabNav from "./TabNav";
 import { APP_VERSION } from "../version";
 
 interface ImageInfo {
@@ -64,25 +67,35 @@ function AppDescription() {
 }
 
 export default function FolderPicker() {
+  const [selectedMode, setSelectedMode] = useState<PracticeMode>("image-curator");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [totalImages, setTotalImages] = useState<number>(0);
-  const [selectedImageCount, setSelectedImageCount] = useState<number | null>(10); // Default to 10
+  const [imageCountMode, setImageCountMode] = useState<ImageCountMode>("all");
+  const [selectedSpecificCount, setSelectedSpecificCount] = useState<number>(10);
   const [selectedFolderPaths, setSelectedFolderPaths] = useState<string[]>([]); // Multiple folder selection
-  const [showPreviousSessions, setShowPreviousSessions] = useState(false);
+  const [activeTab, setActiveTab] = useState<"new-session" | "previous-sessions" | "presets">("new-session");
+  const [showSavePresetModal, setShowSavePresetModal] = useState(false);
+  const [savePresetError, setSavePresetError] = useState<string | null>(null);
+  const [presetToRename, setPresetToRename] = useState<Preset | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [savePresetName, setSavePresetName] = useState("");
+  const [savePresetSuccess, setSavePresetSuccess] = useState<string | null>(null);
+  const [loadPresetSuccess, setLoadPresetSuccess] = useState<string | null>(null);
   const hasAutoLoaded = useRef(false);
 
-  const { setFolderPath, setFolderPaths, setFolderName, setFolderNames, setImages, enterSetup, startSession, resumeSession, viewSession, timerDuration, breakDuration, setBreakDuration, setMaxImages, setTimerDuration, setImageOpacity, setImageZoom, setEraserDisabled, setTimerHidden, returnToPreviousSessions, clearReturnToPreviousSessions } = useSessionStore();
+  const { setFolderPath, setFolderPaths, setFolderName, setFolderNames, setImages, enterSetup, startSession, viewSession, timerDuration, breakDuration, setBreakDuration, setMaxImages, setTimerDuration, setTimedMode, isTimedMode, imageOpacity, imageZoom, eraserDisabled, timerHidden, markupEnabled, setImageOpacity, setImageZoom, setMarkupEnabled, setEraserDisabled, setTimerHidden, returnToPreviousSessions, clearReturnToPreviousSessions } = useSessionStore();
   
-  // Check if we should show Previous Sessions on mount (returning from gallery view)
+  // When returning from gallery view, switch to Previous Sessions tab
   useEffect(() => {
     if (returnToPreviousSessions) {
-      setShowPreviousSessions(true);
+      setActiveTab("previous-sessions");
       clearReturnToPreviousSessions();
     }
   }, [returnToPreviousSessions, clearReturnToPreviousSessions]);
-  const { savedFolders, settings, isLoaded, loadSettings, addFolder, removeFolder, updateSettings, setLastSelectedFolders } = useSettingsStore();
-  const { sessions: savedSessions, isLoaded: sessionsLoaded, loadSessions } = useSavedSessionsStore();
+  const { savedFolders, settings, isLoaded, loadSettings, addFolder, removeFolder, updateSettings, setLastSelectedFolders, setRememberHomeSettings, clearRememberFlags } = useSettingsStore();
+  const { loadSessions } = useSavedSessionsStore();
+  const { presets, isLoaded: presetsLoaded, loadPresets, savePreset, deletePreset, renamePreset } = usePresetsStore();
 
   // Load images from multiple folders
   const loadMultipleFolderImages = useCallback(async (folderPaths: string[]) => {
@@ -117,8 +130,6 @@ export default function FolderPicker() {
       
       setImages(imagePaths);
       setTotalImages(imagePaths.length);
-      // Set default to 10 or total if less than 10
-      setSelectedImageCount(imagePaths.length <= 10 ? null : 10);
       setIsLoading(false);
 
       // Save the selection
@@ -173,26 +184,30 @@ export default function FolderPicker() {
     }
   }, [addFolder, selectedFolderPaths, loadMultipleFolderImages]);
 
-  // Load settings and saved sessions on mount
+  // Load settings, saved sessions, and presets on mount
   useEffect(() => {
     loadSettings();
     loadSessions();
-  }, [loadSettings, loadSessions]);
+    loadPresets();
+  }, [loadSettings, loadSessions, loadPresets]);
 
   // Apply saved settings when loaded
   useEffect(() => {
     if (isLoaded) {
+      setTimedMode(settings.isTimedMode ?? true);
       setTimerDuration(settings.timerDuration);
       setBreakDuration(settings.breakDuration);
       setImageOpacity(settings.imageOpacity);
       setImageZoom(settings.imageZoom);
+      setMarkupEnabled(settings.markupEnabled ?? true);
       setEraserDisabled(settings.eraserDisabled);
       setTimerHidden(settings.timerHidden);
-      if (settings.maxImages !== null) {
-        setSelectedImageCount(settings.maxImages);
+      setImageCountMode(settings.imageCountMode ?? "all");
+      if (settings.imageCountMode === "specific" && settings.maxImages !== null) {
+        setSelectedSpecificCount(settings.maxImages);
       }
     }
-  }, [isLoaded, settings.timerDuration, settings.breakDuration, settings.maxImages, settings.imageOpacity, settings.imageZoom, settings.eraserDisabled, settings.timerHidden, setTimerDuration, setBreakDuration, setImageOpacity, setImageZoom, setEraserDisabled, setTimerHidden]);
+  }, [isLoaded, settings.isTimedMode, settings.timerDuration, settings.breakDuration, settings.imageCountMode, settings.maxImages, settings.imageOpacity, settings.imageZoom, settings.markupEnabled, settings.eraserDisabled, settings.timerHidden, setTimedMode, setTimerDuration, setBreakDuration, setImageOpacity, setImageZoom, setMarkupEnabled, setEraserDisabled, setTimerHidden]);
 
   // Auto-load last selected folders (only once)
   useEffect(() => {
@@ -214,31 +229,33 @@ export default function FolderPicker() {
   const saveCurrentSettings = useCallback(() => {
     if (isLoaded) {
       updateSettings({
+        isTimedMode,
         timerDuration,
         breakDuration,
-        maxImages: selectedImageCount,
+        imageCountMode,
+        maxImages: imageCountMode === "specific" ? selectedSpecificCount : null,
       });
     }
-  }, [timerDuration, breakDuration, selectedImageCount, isLoaded, updateSettings]);
+  }, [isTimedMode, timerDuration, breakDuration, imageCountMode, selectedSpecificCount, isLoaded, updateSettings]);
 
-  // Calculate session duration including breaks
+  // Resolved image count for session
+  const sessionImageCount = useMemo(() => {
+    if (imageCountMode === "all") return totalImages;
+    return Math.min(selectedSpecificCount, totalImages);
+  }, [imageCountMode, selectedSpecificCount, totalImages]);
+
+  // Calculate session duration (only for Timed mode)
   const sessionDuration = useMemo(() => {
-    const count = selectedImageCount || totalImages;
-    if (count === 0) return null;
+    if (!isTimedMode || sessionImageCount === 0) return null;
     // Total time = (image time × count) + (break time × (count - 1))
-    // No break before first image
-    const totalSeconds = (count * timerDuration) + ((count - 1) * breakDuration);
+    const totalSeconds = (sessionImageCount * timerDuration) + ((sessionImageCount - 1) * breakDuration);
     const hours = Math.floor(totalSeconds / 3600);
     const minutes = Math.floor((totalSeconds % 3600) / 60);
     const seconds = totalSeconds % 60;
-    
-    if (hours > 0) {
-      return `${hours}h ${minutes}m`;
-    } else if (minutes > 0) {
-      return `${minutes}m ${seconds}s`;
-    }
+    if (hours > 0) return `${hours}h ${minutes}m`;
+    if (minutes > 0) return `${minutes}m ${seconds}s`;
     return `${seconds}s`;
-  }, [selectedImageCount, totalImages, timerDuration, breakDuration]);
+  }, [isTimedMode, sessionImageCount, timerDuration, breakDuration]);
 
   const handleSelectNewFolder = async () => {
     // Open folder picker dialog
@@ -276,8 +293,10 @@ export default function FolderPicker() {
 
   // Common setup before starting any session
   const prepareSession = () => {
-    // Save current settings for next time
-    saveCurrentSettings();
+    // Save current settings only when user has enabled Remember
+    if (settings.rememberHomeSettings) {
+      saveCurrentSettings();
+    }
     
     // Set folder names for potential saving later
     if (selectedFolderPaths.length > 0) {
@@ -286,9 +305,11 @@ export default function FolderPicker() {
       // Also set legacy single name (combined)
       setFolderName(names.join(", "));
     }
-    // Set max images if user selected a limit
-    if (selectedImageCount && selectedImageCount < totalImages) {
-      setMaxImages(selectedImageCount);
+    // Set max images based on image count mode
+    if (imageCountMode === "specific") {
+      setMaxImages(selectedSpecificCount);
+    } else {
+      setMaxImages(null); // all
     }
   };
 
@@ -304,47 +325,133 @@ export default function FolderPicker() {
     startSession();
   };
 
-  const handleResumeSession = (session: SavedSession) => {
-    // Set folder info
-    setFolderPath(session.folderPath);
-    setFolderName(session.folderName);
-    
-    // Resume the session with all its data
-    resumeSession({
-      id: session.id,
-      name: session.name,
-      imageOrder: session.imageOrder,
-      currentIndex: session.currentImageIndex,
-      drawings: session.drawings,
-      settings: session.settings,
-    });
-  };
-
   const handleViewSession = (session: SavedSession) => {
     // View the session summary without starting the timer
     viewSession({
       id: session.id,
       name: session.name,
       imageOrder: session.imageOrder,
-      currentIndex: session.currentImageIndex,
-      drawings: session.drawings,
+      currentIndex: 0,
+      drawings: session.drawings ?? {},
       settings: session.settings,
     });
   };
 
-  // Image count presets
-  const imageCountPresets = [10, 20, 30, 50, 100].filter(n => n <= totalImages);
+  // Preset helpers
+  const getModeBadgeLabel = (mode: PresetMode) => {
+    switch (mode) {
+      case "image-curator": return "Image Curator";
+      case "free-draw": return "Free Draw";
+      case "3d-perspective": return "3D & Perspective";
+      default: return mode;
+    }
+  };
 
-  // Show Previous Sessions screen
-  if (showPreviousSessions) {
-    return (
-      <PreviousSessions
-        onBack={() => setShowPreviousSessions(false)}
-        onResume={handleResumeSession}
-        onView={handleViewSession}
-      />
+  const handleLoadPreset = async (preset: Preset) => {
+    const s = preset.settings;
+    const modeMismatch = preset.mode !== selectedMode;
+    if (modeMismatch) {
+      setSelectedMode(preset.mode);
+    }
+    setTimedMode(s.isTimedMode);
+    setTimerDuration(s.timerDuration);
+    setBreakDuration(s.breakDuration);
+    setImageOpacity(s.imageOpacity);
+    setImageZoom(s.imageZoom);
+    setEraserDisabled(s.eraserDisabled);
+    setTimerHidden(s.timerHidden);
+    setMarkupEnabled(s.markupEnabled);
+    setImageCountMode(s.imageCountMode === "continuous" ? "all" : s.imageCountMode);
+    setMaxImages(s.maxImages);
+    if (s.imageCountMode === "specific" && s.maxImages !== null) {
+      setSelectedSpecificCount(s.maxImages);
+    }
+    await updateSettings({
+      isTimedMode: s.isTimedMode,
+      timerDuration: s.timerDuration,
+      breakDuration: s.breakDuration,
+      imageCountMode: s.imageCountMode === "continuous" ? "all" : s.imageCountMode,
+      maxImages: s.maxImages,
+      imageOpacity: s.imageOpacity,
+      imageZoom: s.imageZoom,
+      eraserDisabled: s.eraserDisabled,
+      timerHidden: s.timerHidden,
+      markupEnabled: s.markupEnabled,
+    });
+    const modeLabel = getModeBadgeLabel(preset.mode);
+    setLoadPresetSuccess(
+      modeMismatch
+        ? `Preset "${preset.name}" loaded (switched to ${modeLabel})`
+        : `Preset "${preset.name}" loaded`
     );
-  }
+    setTimeout(() => setLoadPresetSuccess(null), 3000);
+    setActiveTab("new-session");
+  };
+
+  const handleSavePresetClick = () => {
+    setSavePresetError(null);
+    setSavePresetSuccess(null);
+    const home = settings.rememberHomeSettings === true;
+    const setup = settings.rememberSetupSettings === true;
+    if (!home || !setup) {
+      setSavePresetError(
+        "To save a preset, enable 'Remember current settings' in both:\n• New Session tab\n• Session Setup (click Session Setup button, then Settings)"
+      );
+      return;
+    }
+    const defaultName = `Preset #${presets.length + 1}`;
+    setSavePresetName(defaultName);
+    setShowSavePresetModal(true);
+  };
+
+  const handleSavePresetConfirm = async (name: string) => {
+    const presetSettings = {
+      isTimedMode,
+      timerDuration,
+      breakDuration,
+      imageCountMode,
+      maxImages: imageCountMode === "specific" ? selectedSpecificCount : null,
+      imageOpacity: imageOpacity ?? 100,
+      imageZoom: imageZoom ?? 100,
+      eraserDisabled: eraserDisabled ?? false,
+      timerHidden: timerHidden ?? false,
+      markupEnabled: markupEnabled ?? true,
+    };
+    await savePreset(name, selectedMode, presetSettings);
+    await clearRememberFlags();
+    setShowSavePresetModal(false);
+    setSavePresetName("");
+    setSavePresetSuccess(`Preset "${name}" saved`);
+    setTimeout(() => setSavePresetSuccess(null), 3000);
+  };
+
+  const handleRenamePresetStart = (preset: Preset) => {
+    setPresetToRename(preset);
+    setRenameValue(preset.name);
+  };
+
+  const handleRenamePresetConfirm = async () => {
+    if (presetToRename && renameValue.trim()) {
+      await renamePreset(presetToRename.id, renameValue.trim());
+      setPresetToRename(null);
+      setRenameValue("");
+    }
+  };
+
+  const handleDeletePreset = async (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (confirm("Delete this preset?")) {
+      await deletePreset(id);
+    }
+  };
+
+  const formatPresetDate = (timestamp: number) => {
+    return new Date(timestamp).toLocaleDateString(undefined, {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    });
+  };
 
   return (
     <div className="min-h-screen bg-dark-bg overflow-y-auto">
@@ -358,26 +465,45 @@ export default function FolderPicker() {
               <span className="text-xs text-dark-muted bg-dark-surface px-2 py-0.5 rounded-full">
                 v{APP_VERSION}
               </span>
+              <span className="text-xs font-medium bg-orange-500/80 text-white px-1.5 py-0.5 rounded-full">
+                Alpha
+              </span>
             </div>
             <AppDescription />
-            {/* Previous Sessions Button */}
-            {sessionsLoaded && savedSessions.length > 0 && (
-              <button
-                onClick={() => setShowPreviousSessions(true)}
-                className="mt-3 px-4 py-2 bg-dark-surface hover:bg-dark-accent rounded-lg 
-                           text-dark-muted hover:text-dark-text transition-colors 
-                           flex items-center gap-2 mx-auto"
-              >
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
-                </svg>
-                Previous Sessions ({savedSessions.length})
-              </button>
-            )}
           </div>
 
-          {/* Folder Selection Section */}
-          <div className="bg-dark-surface rounded-xl p-4">
+          {/* Load preset success message - visible after switching to New Session */}
+          {loadPresetSuccess && (
+            <div className="bg-green-500/20 border border-green-500/50 rounded-lg px-4 py-2 text-green-400 text-sm">
+              {loadPresetSuccess}
+            </div>
+          )}
+
+          {/* Tab navigation */}
+          <TabNav
+            tabs={[
+              {
+                id: "new-session",
+                label: "New Session",
+                content: (
+                  <div className="space-y-6 bg-dark-surface rounded-b-xl p-4 border-x border-b border-dark-accent">
+          {/* 1. Mode Selection Block */}
+          <div className="bg-dark-bg rounded-xl p-4">
+            <h2 className="text-sm font-medium text-dark-muted uppercase tracking-wide mb-3">
+              Practice Mode
+            </h2>
+            <ModeSelection value={selectedMode} onChange={setSelectedMode} />
+          </div>
+
+          {/* 2. Settings Block — contextual, animates on mode switch */}
+          <div
+            key={selectedMode}
+            className="overflow-hidden settings-block-enter"
+          >
+            {selectedMode === "image-curator" ? (
+              <div className="space-y-4">
+                {/* Folder Selection */}
+                <div className="bg-dark-surface rounded-xl p-4">
             <div className="flex items-center justify-between mb-3">
               <h2 className="text-sm font-medium text-dark-muted uppercase tracking-wide">Folders</h2>
               <button
@@ -479,105 +605,155 @@ export default function FolderPicker() {
           {totalImages > 0 && (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               
-              {/* Left Column: Timer & Break */}
+              {/* Left Column: Timer Mode + (Timer & Break when Timed) */}
               <div className="bg-dark-surface rounded-xl p-4 space-y-4">
-                {/* Timer Settings */}
+                {/* Timer Mode toggle */}
                 <div>
                   <h3 className="text-sm font-medium text-dark-muted uppercase tracking-wide mb-2">
-                    Image Duration
+                    Timer Mode
                   </h3>
-                  <TimerPresets />
-                </div>
-
-                {/* Break Duration */}
-                <div className="pt-3 border-t border-dark-accent">
-                  <h3 className="text-sm font-medium text-dark-muted uppercase tracking-wide mb-2">
-                    Break
-                  </h3>
-                  <div className="flex flex-wrap gap-1.5">
-                    {[0, 2, 3, 5, 10].map((seconds) => (
-                      <button
-                        key={seconds}
-                        onClick={() => setBreakDuration(seconds)}
-                        className={`px-3 py-1.5 rounded text-sm font-medium transition-colors
-                          ${breakDuration === seconds
-                            ? "bg-blue-600 text-white"
-                            : "bg-dark-bg text-dark-muted hover:bg-dark-accent hover:text-dark-text"
-                          }`}
-                      >
-                        {seconds === 0 ? "None" : `${seconds}s`}
-                      </button>
-                    ))}
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => setTimedMode(true)}
+                      className={`flex-1 px-3 py-2 rounded-lg font-medium transition-colors
+                        ${isTimedMode
+                          ? "bg-blue-600 text-white"
+                          : "bg-dark-bg text-dark-muted hover:bg-dark-accent hover:text-dark-text"
+                        }`}
+                    >
+                      Timed
+                    </button>
+                    <button
+                      onClick={() => setTimedMode(false)}
+                      className={`flex-1 px-3 py-2 rounded-lg font-medium transition-colors
+                        ${!isTimedMode
+                          ? "bg-blue-600 text-white"
+                          : "bg-dark-bg text-dark-muted hover:bg-dark-accent hover:text-dark-text"
+                        }`}
+                    >
+                      Untimed
+                    </button>
                   </div>
                 </div>
+
+                {/* Timer & Break - only when Timed */}
+                {isTimedMode && (
+                  <>
+                    <div className="pt-3 border-t border-dark-accent">
+                      <h3 className="text-sm font-medium text-dark-muted uppercase tracking-wide mb-2">
+                        Image Duration
+                      </h3>
+                      <TimerPresets />
+                    </div>
+
+                    <div className="pt-3 border-t border-dark-accent">
+                      <h3 className="text-sm font-medium text-dark-muted uppercase tracking-wide mb-2">
+                        Break
+                      </h3>
+                      <div className="flex flex-wrap gap-1.5">
+                        {[0, 2, 3, 5, 10].map((seconds) => (
+                          <button
+                            key={seconds}
+                            onClick={() => setBreakDuration(seconds)}
+                            className={`px-3 py-1.5 rounded text-sm font-medium transition-colors
+                              ${breakDuration === seconds
+                                ? "bg-blue-600 text-white"
+                                : "bg-dark-bg text-dark-muted hover:bg-dark-accent hover:text-dark-text"
+                              }`}
+                          >
+                            {seconds === 0 ? "None" : `${seconds}s`}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </>
+                )}
               </div>
 
               {/* Right Column: Image Count */}
               <div className="bg-dark-surface rounded-xl p-4">
                 <h3 className="text-sm font-medium text-dark-muted uppercase tracking-wide mb-2">
-                  Number of Images
+                  Image Count
                 </h3>
-                <div className="flex flex-wrap gap-1.5 mb-3">
-                  <button
-                    onClick={() => setSelectedImageCount(null)}
-                    className={`px-3 py-1.5 rounded text-sm font-medium transition-colors
-                      ${selectedImageCount === null
-                        ? "bg-blue-600 text-white"
-                        : "bg-dark-bg text-dark-muted hover:bg-dark-accent hover:text-dark-text"
-                      }`}
-                  >
-                    All ({totalImages})
-                  </button>
-                  {imageCountPresets.map((count) => (
-                    <button
-                      key={count}
-                      onClick={() => setSelectedImageCount(count)}
-                      className={`px-3 py-1.5 rounded text-sm font-medium transition-colors
-                        ${selectedImageCount === count
-                          ? "bg-blue-600 text-white"
-                          : "bg-dark-bg text-dark-muted hover:bg-dark-accent hover:text-dark-text"
-                        }`}
-                    >
-                      {count}
-                    </button>
-                  ))}
-                </div>
-                
-                {/* Custom input */}
-                <div className="flex items-center gap-2">
-                  <span className="text-dark-muted text-xs">Custom:</span>
-                  <input
-                    type="number"
-                    min="1"
-                    max={totalImages}
-                    value={selectedImageCount || ""}
-                    onChange={(e) => {
-                      const val = parseInt(e.target.value);
-                      if (val > 0 && val <= totalImages) {
-                        setSelectedImageCount(val);
-                      } else if (e.target.value === "") {
-                        setSelectedImageCount(null);
-                      }
-                    }}
-                    placeholder={`1-${totalImages}`}
-                    className="w-20 px-2 py-1 bg-dark-bg border border-dark-accent rounded 
-                               text-dark-text text-center text-sm focus:outline-none focus:border-blue-500"
-                  />
-                </div>
+                <select
+                  value={imageCountMode}
+                  onChange={(e) => setImageCountMode(e.target.value as ImageCountMode)}
+                  className="w-full px-3 py-2 bg-dark-bg border border-dark-accent rounded-lg text-dark-text 
+                             text-sm font-medium focus:outline-none focus:border-blue-500 focus:ring-1 
+                             focus:ring-blue-500/50 cursor-pointer hover:border-dark-text/50 transition-colors"
+                >
+                  <option value="all">All ({totalImages})</option>
+                  <option value="specific">Specific number</option>
+                </select>
+                {imageCountMode === "specific" && (
+                  <div className="flex items-center gap-2 mt-3">
+                    <input
+                      type="number"
+                      min="1"
+                      max={totalImages}
+                      value={selectedSpecificCount}
+                      onChange={(e) => {
+                        const val = parseInt(e.target.value);
+                        if (val > 0 && val <= totalImages) setSelectedSpecificCount(val);
+                        else if (e.target.value === "") setSelectedSpecificCount(1);
+                      }}
+                      className="w-20 px-2 py-1.5 bg-dark-bg border border-dark-accent rounded-lg 
+                                 text-dark-text text-center text-sm focus:outline-none focus:border-blue-500"
+                    />
+                    <span className="text-dark-muted text-xs">of {totalImages}</span>
+                  </div>
+                )}
               </div>
             </div>
           )}
 
-          {/* Session Summary & Start */}
+          {/* Remember settings - subtle footer, only when folders selected */}
           {totalImages > 0 && (
-            <div className="bg-dark-surface rounded-xl p-4">
-              <div className="flex items-center justify-between">
+            <div className="pt-2 border-t border-dark-accent/50">
+              <label className="flex items-center gap-2 cursor-pointer text-dark-muted text-xs hover:text-dark-text/80 transition-colors">
+                <input
+                  type="checkbox"
+                  checked={settings.rememberHomeSettings === true}
+                  onChange={(e) => setRememberHomeSettings(e.target.checked)}
+                  className="w-4 h-4 rounded bg-dark-bg border-dark-accent text-blue-600 
+                             focus:ring-blue-500 focus:ring-offset-dark-bg"
+                />
+                <span>Remember current settings</span>
+              </label>
+            </div>
+          )}
+
+                {/* Instructions (only show if no folder selected) */}
+                {totalImages === 0 && (
+                  <div className="bg-dark-surface rounded-xl p-6 text-center text-dark-muted">
+                    <p>Select a folder containing reference images to begin.</p>
+                    <p className="text-xs mt-1">Supported: JPG, PNG, GIF, WebP, BMP, TIFF</p>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="bg-dark-surface rounded-xl p-8 text-center text-dark-muted">
+                <p className="text-lg font-medium mb-1">Coming Soon</p>
+                <p className="text-sm">Settings for this mode are in development.</p>
+              </div>
+            )}
+          </div>
+
+          {/* 3. Action Block */}
+          <div className="bg-dark-surface rounded-xl p-4">
+            {selectedMode === "image-curator" && totalImages > 0 ? (
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4">
                 <div>
-                  <p className="text-dark-muted text-sm">Session duration</p>
-                  <p className="text-dark-text font-bold text-2xl">{sessionDuration}</p>
+                  <p className="text-dark-muted text-sm">
+                    {isTimedMode ? "Session duration" : "Session"}
+                  </p>
+                  <p className="text-dark-text font-bold text-2xl">
+                    {isTimedMode ? sessionDuration : `${sessionImageCount} images`}
+                  </p>
                   <p className="text-dark-muted text-xs">
-                    {selectedImageCount || totalImages} images × {timerDuration}s
-                    {breakDuration > 0 && ` + ${(selectedImageCount || totalImages) - 1} breaks × ${breakDuration}s`}
+                    {isTimedMode
+                      ? `${sessionImageCount} images × ${timerDuration}s${breakDuration > 0 ? ` + ${sessionImageCount - 1} breaks × ${breakDuration}s` : ""}`
+                      : "Advance manually with arrows"}
                   </p>
                 </div>
                 <div className="flex gap-3">
@@ -601,18 +777,225 @@ export default function FolderPicker() {
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                     </svg>
-                    New Session
+                    Begin Session
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="text-center py-4">
+                {selectedMode === "image-curator" && totalImages === 0 ? (
+                  <p className="text-dark-muted text-sm">
+                    Add folders above to start a session
+                  </p>
+                ) : (
+                  <p className="text-dark-muted text-sm">
+                    Action buttons for this mode are coming soon
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+
+                  </div>
+                ),
+              },
+              {
+                id: "previous-sessions",
+                label: "Previous Sessions",
+                content: (
+                  <div className="bg-dark-surface rounded-b-xl overflow-hidden">
+                    <PreviousSessions
+                      onBack={() => setActiveTab("new-session")}
+                      onView={handleViewSession}
+                      embedded
+                    />
+                  </div>
+                ),
+              },
+              {
+                id: "presets",
+                label: "Presets",
+                content: (
+                  <div className="space-y-6 bg-dark-surface rounded-b-xl p-4 border-x border-b border-dark-accent min-h-[280px]">
+                    {/* Save New Preset button - always visible */}
+                    <div className="flex flex-col gap-2">
+                      <button
+                        onClick={handleSavePresetClick}
+                        className="w-full px-4 py-3 bg-blue-600 hover:bg-blue-700 rounded-lg text-white 
+                                   font-medium transition-colors flex items-center justify-center gap-2"
+                      >
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" />
+                        </svg>
+                        Save New Preset
+                      </button>
+                      {savePresetError && (
+                        <p className="text-red-400 text-sm px-2 whitespace-pre-line">{savePresetError}</p>
+                      )}
+                      {savePresetSuccess && (
+                        <p className="text-green-400 text-sm px-2">{savePresetSuccess}</p>
+                      )}
+                    </div>
+
+                    {/* Preset list or empty state */}
+                    {presets.length === 0 ? (
+                      <div className="bg-dark-bg rounded-xl p-8 text-center">
+                        <p className="text-dark-text font-medium mb-2">No presets yet</p>
+                        <p className="text-dark-muted text-sm">
+                          Enable &quot;Remember current settings&quot; in New Session and Session Setup, then return here to save a preset.
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        {presets.map((preset) => (
+                          <div
+                            key={preset.id}
+                            className="bg-dark-bg rounded-xl p-4 hover:bg-dark-accent/30 transition-colors"
+                          >
+                            <div className="flex items-start justify-between gap-4">
+                              <div className="flex-1 min-w-0">
+                                <h3 className="text-dark-text font-semibold text-lg truncate">
+                                  {preset.name}
+                                </h3>
+                                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-1 text-dark-muted text-sm">
+                                  <span className="px-2 py-0.5 bg-dark-surface rounded text-xs font-medium">
+                                    {getModeBadgeLabel(preset.mode)}
+                                  </span>
+                                  <span className="flex items-center gap-1">
+                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                    </svg>
+                                    {formatPresetDate(preset.createdAt)}
+                                  </span>
+                                </div>
+                              </div>
+                              <div className="flex flex-col gap-2">
+                                <button
+                                  onClick={() => handleLoadPreset(preset)}
+                                  className="px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded-lg text-white 
+                                             font-medium text-sm transition-colors flex items-center gap-2"
+                                >
+                                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                                  </svg>
+                                  Load
+                                </button>
+                                <button
+                                  onClick={() => handleRenamePresetStart(preset)}
+                                  className="px-4 py-2 bg-dark-accent hover:bg-dark-surface rounded-lg text-dark-text 
+                                             font-medium text-sm transition-colors"
+                                >
+                                  Rename
+                                </button>
+                                <button
+                                  onClick={(e) => handleDeletePreset(preset.id, e)}
+                                  className="px-4 py-2 bg-dark-bg hover:bg-red-600/50 rounded-lg text-dark-muted 
+                                             hover:text-red-300 font-medium text-sm transition-colors flex items-center gap-2"
+                                >
+                                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                  </svg>
+                                  Delete
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ),
+              },
+            ]}
+            activeTab={activeTab}
+            onTabChange={(id) => setActiveTab(id as "new-session" | "previous-sessions" | "presets")}
+          />
+
+          {/* Save Preset Modal */}
+          {showSavePresetModal && (
+            <div
+              className="fixed inset-0 bg-black/70 flex items-center justify-center z-50"
+              onClick={() => setShowSavePresetModal(false)}
+            >
+              <div
+                className="bg-dark-surface rounded-xl p-6 max-w-sm w-full mx-4 shadow-xl border border-dark-accent"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <h3 className="text-dark-text font-medium mb-3">Name your preset</h3>
+                <input
+                  type="text"
+                  placeholder="Preset name"
+                  value={savePresetName}
+                  onChange={(e) => setSavePresetName(e.target.value)}
+                  autoFocus
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      const name = savePresetName.trim();
+                      if (name) handleSavePresetConfirm(name);
+                    }
+                    if (e.key === "Escape") setShowSavePresetModal(false);
+                  }}
+                  className="w-full px-3 py-2 bg-dark-bg border border-dark-accent rounded-lg 
+                             text-dark-text placeholder-dark-muted focus:outline-none focus:border-blue-500 mb-4"
+                />
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setShowSavePresetModal(false)}
+                    className="flex-1 px-4 py-2 bg-dark-accent hover:bg-dark-bg rounded-lg text-dark-text font-medium"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={() => savePresetName.trim() && handleSavePresetConfirm(savePresetName.trim())}
+                    disabled={!savePresetName.trim()}
+                    className="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-white font-medium disabled:opacity-50"
+                  >
+                    Save
                   </button>
                 </div>
               </div>
             </div>
           )}
 
-          {/* Instructions (only show if no folder selected) */}
-          {totalImages === 0 && (
-            <div className="text-center text-dark-muted text-sm py-4">
-              <p>Select a folder containing reference images to begin.</p>
-              <p className="text-xs mt-1">Supported: JPG, PNG, GIF, WebP, BMP, TIFF</p>
+          {/* Rename Preset Modal */}
+          {presetToRename && (
+            <div
+              className="fixed inset-0 bg-black/70 flex items-center justify-center z-50"
+              onClick={() => { setPresetToRename(null); setRenameValue(""); }}
+            >
+              <div
+                className="bg-dark-surface rounded-xl p-6 max-w-sm w-full mx-4 shadow-xl border border-dark-accent"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <h3 className="text-dark-text font-medium mb-3">Rename Preset</h3>
+                <input
+                  type="text"
+                  value={renameValue}
+                  onChange={(e) => setRenameValue(e.target.value)}
+                  autoFocus
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleRenamePresetConfirm();
+                    if (e.key === "Escape") { setPresetToRename(null); setRenameValue(""); }
+                  }}
+                  className="w-full px-3 py-2 bg-dark-bg border border-dark-accent rounded-lg 
+                             text-dark-text placeholder-dark-muted focus:outline-none focus:border-blue-500 mb-4"
+                />
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => { setPresetToRename(null); setRenameValue(""); }}
+                    className="flex-1 px-4 py-2 bg-dark-accent hover:bg-dark-bg rounded-lg text-dark-text font-medium"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleRenamePresetConfirm}
+                    disabled={!renameValue.trim()}
+                    className="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-white font-medium disabled:opacity-50"
+                  >
+                    Rename
+                  </button>
+                </div>
+              </div>
             </div>
           )}
         </div>

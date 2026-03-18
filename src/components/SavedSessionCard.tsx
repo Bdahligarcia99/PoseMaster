@@ -4,11 +4,11 @@ import { SavedSession, useSavedSessionsStore } from "../store/savedSessionsStore
 
 interface SavedSessionCardProps {
   session: SavedSession;
-  onResume: (session: SavedSession) => void;
   onView: (session: SavedSession) => void;
+  onExport?: (session: SavedSession) => void;
 }
 
-export default function SavedSessionCard({ session, onResume, onView }: SavedSessionCardProps) {
+export default function SavedSessionCard({ session, onView, onExport }: SavedSessionCardProps) {
   const [thumbnailUrl, setThumbnailUrl] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
@@ -40,10 +40,7 @@ export default function SavedSessionCard({ session, onResume, onView }: SavedSes
     });
   };
 
-  const progress = session.currentImageIndex + 1;
-  const total = session.totalImages;
-  const progressPercent = (progress / total) * 100;
-  const drawingCount = Object.keys(session.drawings).length;
+  const imageCount = session.imageOrder.length;
 
   return (
     <div className="bg-dark-surface rounded-xl overflow-hidden group relative">
@@ -85,26 +82,6 @@ export default function SavedSessionCard({ session, onResume, onView }: SavedSes
           </div>
         )}
         
-        {/* Progress overlay */}
-        <div className="absolute bottom-0 left-0 right-0 h-1 bg-dark-bg/50">
-          <div 
-            className="h-full bg-blue-500"
-            style={{ width: `${progressPercent}%` }}
-          />
-        </div>
-        
-        {/* Delete button */}
-        <button
-          onClick={() => setShowDeleteConfirm(true)}
-          className="absolute top-2 right-2 w-8 h-8 bg-dark-bg/80 hover:bg-red-600 
-                     rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 
-                     transition-opacity"
-          title="Delete session"
-        >
-          <svg className="w-4 h-4 text-dark-text" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-          </svg>
-        </button>
       </div>
 
       {/* Info */}
@@ -128,16 +105,9 @@ export default function SavedSessionCard({ session, onResume, onView }: SavedSes
           </p>
         </div>
 
-        <div className="flex items-center justify-between text-xs mb-3">
-          <span className="text-dark-muted">
-            Progress: <span className="text-dark-text">{progress}/{total}</span>
-          </span>
-          {drawingCount > 0 && (
-            <span className="text-dark-muted">
-              <span className="text-blue-400">{drawingCount}</span> drawings
-            </span>
-          )}
-        </div>
+        <p className="text-dark-muted text-xs mb-3">
+          {imageCount} image{imageCount !== 1 ? "s" : ""}
+        </p>
 
         <div className="flex gap-2">
           <button
@@ -152,17 +122,29 @@ export default function SavedSessionCard({ session, onResume, onView }: SavedSes
             </svg>
             View
           </button>
+          {onExport && (
+            <button
+              onClick={() => onExport(session)}
+              className="flex-1 px-3 py-2 bg-blue-600 hover:bg-blue-700 
+                         text-white rounded-lg font-medium text-sm transition-colors
+                         flex items-center justify-center gap-1"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+              </svg>
+              Export
+            </button>
+          )}
           <button
-            onClick={() => onResume(session)}
-            className="flex-1 px-3 py-2 bg-blue-600 hover:bg-blue-700 
-                       text-white rounded-lg font-medium text-sm transition-colors
+            onClick={() => setShowDeleteConfirm(true)}
+            className="px-3 py-2 bg-dark-bg hover:bg-red-600/50 rounded-lg text-dark-muted 
+                       hover:text-red-300 font-medium text-sm transition-colors
                        flex items-center justify-center gap-1"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
             </svg>
-            Resume
+            Delete
           </button>
         </div>
       </div>

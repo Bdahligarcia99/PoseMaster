@@ -20,8 +20,8 @@ export interface ViewedImage {
   hasMarkup: boolean;
 }
 
-// For resuming saved sessions
-export interface ResumedSessionData {
+// For viewing saved sessions (gallery)
+export interface ViewSessionData {
   id: string;
   name: string;
   imageOrder: string[];
@@ -50,16 +50,18 @@ interface SessionState {
   isSessionEnded: boolean;
   isInSetup: boolean; // Pre-session setup screen
   isViewingGallery: boolean; // Gallery view mode for saved sessions
-  isViewingOnly: boolean; // True when viewing saved session without resuming (from Previous Sessions "View")
+  isViewingOnly: boolean; // True when viewing saved session (from Previous Sessions "View")
   returnToPreviousSessions: boolean; // Flag to tell FolderPicker to show Previous Sessions on mount
   galleryIndex: number; // Current image in gallery view
   viewedImages: ViewedImage[];
   
-  // Resumed session tracking
-  resumedSessionId: string | null;
-  resumedSessionName: string | null;
+  // Viewed session tracking (when viewing from Previous Sessions)
+  viewedSessionId: string | null;
+  viewedSessionName: string | null;
   
   // Timer settings
+  isTimedMode: boolean; // true = Timed (timer + breaks), false = Untimed (manual advance)
+  isTimedSession: boolean; // alias for isTimedMode, controls timed vs untimed session behavior
   timerDuration: number; // in seconds
   breakDuration: number; // break between images in seconds
   isTimerPaused: boolean;
@@ -67,10 +69,11 @@ interface SessionState {
   
   // Image settings
   imageOpacity: number; // 0-100 percentage
-  imageZoom: number; // 10-100 percentage (100 = fill viewport)
+  imageZoom: number; // 10-200 percentage (100 = fill viewport)
   
   // Drawing settings
-  eraserDisabled: boolean; // Disable eraser tool
+  markupEnabled: boolean; // Enable drawing tools during session
+  eraserDisabled: boolean; // Disable eraser, undo, clear (when markup enabled)
   
   // Display settings
   timerHidden: boolean; // Hide timer during session
@@ -91,8 +94,7 @@ interface SessionState {
   enterSetup: () => void;
   exitSetup: () => void;
   startSession: (options?: { excludePath?: string; includeFirstPath?: string }) => void;
-  resumeSession: (data: ResumedSessionData) => void;
-  viewSession: (data: ResumedSessionData) => void;
+  viewSession: (data: ViewSessionData) => void;
   endSession: () => void;
   resetSession: () => void;
   
@@ -107,10 +109,12 @@ interface SessionState {
   startBreak: () => void;
   endBreak: () => void;
   
+  setTimedMode: (timed: boolean) => void;
   setTimerDuration: (seconds: number) => void;
   setBreakDuration: (seconds: number) => void;
   setImageOpacity: (opacity: number) => void;
   setImageZoom: (zoom: number) => void;
+  setMarkupEnabled: (enabled: boolean) => void;
   setEraserDisabled: (disabled: boolean) => void;
   setTimerHidden: (hidden: boolean) => void;
   toggleTimerPause: () => void;
@@ -154,12 +158,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   returnToPreviousSessions: false,
   galleryIndex: 0,
   viewedImages: [],
-  resumedSessionId: null,
-  resumedSessionName: null,
+  viewedSessionId: null,
+  viewedSessionName: null,
+  isTimedMode: true, // default Timed
+  isTimedSession: true, // alias, kept in sync with isTimedMode
   timerDuration: 30, // default 30 seconds
   breakDuration: 3, // default 3 second break between images
   imageOpacity: 100, // default full opacity
   imageZoom: 100, // default full size
+  markupEnabled: true, // default drawing enabled
   eraserDisabled: false, // default eraser enabled
   timerHidden: false, // default timer visible
   isTimerPaused: false,
@@ -236,47 +243,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       currentDrawingData: preserveDrawing ? state.currentDrawingData : { lines: [] },
       imageHistories: {}, // Clear per-image histories for new session
       isTimerPaused: false,
-      resumedSessionId: null,
-      resumedSessionName: null,
-    });
-  },
-  
-  resumeSession: (data) => {
-    // Convert saved drawings to viewedImages format
-    const viewedImages: ViewedImage[] = Object.entries(data.drawings).map(([path, drawing]) => ({
-      path,
-      viewedAt: drawing.savedAt,
-      drawingData: drawing.drawingData,
-      hasMarkup: drawing.drawingData.lines.length > 0,
-    }));
-    
-    // Get drawing for current image if it exists
-    const currentImagePath = data.imageOrder[data.currentIndex];
-    const currentDrawing = data.drawings[currentImagePath];
-    
-    set({
-      images: data.imageOrder,
-      allImages: data.imageOrder,
-      currentImageIndex: data.currentIndex,
-      isSessionActive: true,
-      isSessionEnded: false,
-      isOnBreak: false,
-      viewedImages,
-      currentDrawingData: currentDrawing?.drawingData || { lines: [] },
-      isTimerPaused: false,
-      resumedSessionId: data.id,
-      resumedSessionName: data.name,
-      timerDuration: data.settings.timerDuration,
-      breakDuration: data.settings.breakDuration,
-      imageOpacity: data.settings.imageOpacity,
-      maxImages: data.imageOrder.length,
+      viewedSessionId: null,
+      viewedSessionName: null,
     });
   },
   
   viewSession: (data) => {
-    // Convert saved drawings to viewedImages format (all images that have drawings)
+    // Build viewedImages from imageOrder (handles sessions with or without drawings)
     const viewedImages: ViewedImage[] = data.imageOrder.map((path) => {
-      const drawing = data.drawings[path];
+      const drawing = data.drawings?.[path];
       return {
         path,
         viewedAt: drawing?.savedAt || Date.now(),
@@ -298,10 +273,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       viewedImages,
       currentDrawingData: { lines: [] },
       isTimerPaused: false,
-      resumedSessionId: data.id,
-      resumedSessionName: data.name,
+      viewedSessionId: data.id,
+      viewedSessionName: data.name,
       folderPath: null,
       folderName: null,
+      isTimedMode: true,
+      isTimedSession: true, // Viewing saved sessions
       timerDuration: data.settings.timerDuration,
       breakDuration: data.settings.breakDuration,
       imageOpacity: data.settings.imageOpacity,
@@ -366,8 +343,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     currentDrawingData: { lines: [] },
     imageHistories: {},
     isTimerPaused: false,
-    resumedSessionId: null,
-    resumedSessionName: null,
+    viewedSessionId: null,
+    viewedSessionName: null,
   }),
   
   // Gallery view actions
@@ -380,8 +357,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     galleryIndex: 0,
     images: [],
     viewedImages: [],
-    resumedSessionId: null,
-    resumedSessionName: null,
+    viewedSessionId: null,
+    viewedSessionName: null,
   }),
   
   clearReturnToPreviousSessions: () => set({ returnToPreviousSessions: false }),
@@ -492,8 +469,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     
     const currentImage = state.images[state.currentImageIndex];
     
-    // Remove current image from session
+    // Remove current image from session (images and allImages)
     const newImages = state.images.filter((_, idx) => idx !== state.currentImageIndex);
+    const newAllImages = state.allImages.filter(path => path !== currentImage);
     
     // Remove from viewedImages if present
     const newViewedImages = state.viewedImages.filter(v => v.path !== currentImage);
@@ -523,6 +501,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     
     set({
       images: newImages,
+      allImages: newAllImages,
       viewedImages: newViewedImages,
       currentImageIndex: newIndex,
       currentDrawingData: newCurrentViewed?.drawingData || { lines: [] },
@@ -530,13 +509,17 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     });
   },
   
+  setTimedMode: (timed) => set({ isTimedMode: timed, isTimedSession: timed }),
+  
   setTimerDuration: (seconds) => set({ timerDuration: seconds }),
   
   setBreakDuration: (seconds) => set({ breakDuration: seconds }),
   
   setImageOpacity: (opacity) => set({ imageOpacity: Math.max(0, Math.min(100, opacity)) }),
   
-  setImageZoom: (zoom) => set({ imageZoom: Math.max(10, Math.min(100, zoom)) }),
+  setImageZoom: (zoom) => set({ imageZoom: Math.max(10, Math.min(200, zoom)) }),
+  
+  setMarkupEnabled: (enabled) => set({ markupEnabled: enabled }),
   
   setEraserDisabled: (disabled) => set({ eraserDisabled: disabled }),
   

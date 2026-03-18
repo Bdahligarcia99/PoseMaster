@@ -148,15 +148,14 @@ export default function SessionSummary() {
     folderName, 
     folderNames,
     images, 
-    currentImageIndex,
     timerDuration,
     breakDuration,
     imageOpacity,
-    resumedSessionId,
-    resumedSessionName,
+    isTimedMode,
+    markupEnabled,
     setGalleryIndex,
   } = useSessionStore();
-  const { saveSession, updateSession } = useSavedSessionsStore();
+  const { saveSession } = useSavedSessionsStore();
   
   const [selectedImages, setSelectedImages] = useState<Set<string>>(new Set());
   const [showSaveModal, setShowSaveModal] = useState(false);
@@ -202,43 +201,42 @@ export default function SessionSummary() {
     useSessionStore.setState({ isViewingGallery: true, isSessionEnded: false });
   };
 
-  // Save session (non-destructive)
+  // Save session (non-destructive) - only include practiced images
   const handleSaveSession = async (name: string) => {
-    // Build drawings record from viewedImages
-    const drawings: Record<string, ImageDrawing> = {};
-    for (const viewed of viewedImages) {
-      if (viewed.drawingData && viewed.drawingData.lines.length > 0) {
-        drawings[viewed.path] = {
-          imagePath: viewed.path,
-          drawingData: viewed.drawingData,
-          savedAt: viewed.viewedAt,
-        };
-      }
-    }
+    // Only include images user actually practiced on (skipped images excluded)
+    const imageOrder = viewedImages.map((v) => v.path);
 
-    if (resumedSessionId) {
-      // Update existing session
-      await updateSession(resumedSessionId, {
-        name: name || resumedSessionName || undefined,
-        currentImageIndex,
-        drawings,
-        settings: { timerDuration, breakDuration, imageOpacity },
-      });
-    } else {
-      // Create new session
-      await saveSession({
-        name,
-        folderPath: folderPath || (folderPaths.length > 0 ? folderPaths[0] : ""),
-        folderName: folderName || "Unknown",
-        folderPaths: folderPaths.length > 0 ? folderPaths : (folderPath ? [folderPath] : []),
-        folderNames: folderNames.length > 0 ? folderNames : (folderName ? [folderName] : []),
-        settings: { timerDuration, breakDuration, imageOpacity },
-        currentImageIndex,
-        totalImages: images.length,
-        imageOrder: images,
-        drawings,
-      });
-    }
+    // If markup was disabled, save imageOrder only (empty drawings)
+    const drawings: Record<string, ImageDrawing> = !markupEnabled ? {} : (() => {
+      const out: Record<string, ImageDrawing> = {};
+      for (const viewed of viewedImages) {
+        if (viewed.drawingData && viewed.drawingData.lines.length > 0) {
+          out[viewed.path] = {
+            imagePath: viewed.path,
+            drawingData: viewed.drawingData,
+            savedAt: viewed.viewedAt,
+          };
+        }
+      }
+      return out;
+    })();
+
+    await saveSession({
+      name,
+      folderPath: folderPath || (folderPaths.length > 0 ? folderPaths[0] : ""),
+      folderName: folderName || "Unknown",
+      folderPaths: folderPaths.length > 0 ? folderPaths : (folderPath ? [folderPath] : []),
+      folderNames: folderNames.length > 0 ? folderNames : (folderName ? [folderName] : []),
+      settings: {
+        timerDuration,
+        breakDuration,
+        imageOpacity,
+        isTimedMode,
+        markupEnabled,
+      },
+      imageOrder,
+      drawings,
+    });
 
     setSessionSaved(true);
     setShowSaveModal(false);
@@ -257,7 +255,7 @@ export default function SessionSummary() {
         isOpen={showSaveModal}
         onClose={() => setShowSaveModal(false)}
         onSave={handleSaveSession}
-        defaultName={resumedSessionName || undefined}
+        defaultName={undefined}
       />
 
       {/* Export Options Modal */}
@@ -268,7 +266,7 @@ export default function SessionSummary() {
         selectedImages={selectedImages}
         imageOpacity={imageOpacity}
         folderPath={folderPath}
-        sessionName={resumedSessionName || undefined}
+        sessionName={undefined}
       />
 
       {/* Header */}
