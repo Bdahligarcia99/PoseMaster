@@ -1,0 +1,49 @@
+---
+description: Installer build management - only rebuild when explicitly requested
+alwaysApply: true
+---
+
+# Installer Build Rule
+
+## Do NOT Rebuild Automatically
+
+**Do NOT rebuild the installer** after making code changes unless the user explicitly asks for it.
+
+When making updates:
+- Edit code as needed
+- Run tests if requested
+- But do NOT automatically rebuild the installer/package
+
+## When Rebuilding IS Requested
+
+When the user asks to rebuild the installer (e.g., "rebuild the installer", "build the installer", "package the app"), **always update the version number first** before building.
+
+### Rebuild Checklist
+
+1. **Update version number** in the appropriate config file (e.g., `package.json`, `tauri.conf.json`, `Cargo.toml`, etc.)
+2. Then proceed with the installer build
+
+Trigger phrases for rebuild:
+- "Rebuild the installer"
+- "Build the installer"
+- "Package the app"
+- "Create a new build"
+- "Make a release"
+
+## Versioning Scheme
+
+PoseMaster uses semantic versioning with mode-based major versions:
+
+| Version Part | When to Bump |
+|--------------|--------------|
+| **Major (X.0.0)** | Only when a new practice mode is added |
+| **Minor (1.X.0)** | New features, UI redesigns, significant changes |
+| **Patch (1.0.X)** | Bug fixes, small improvements |
+
+### Mode-Based Major Versions
+
+- **1.x.x** — Image Curator mode (current)
+- **2.0.0** — When Free Draw mode is added
+- **3.0.0** — When 3D & Perspective mode is added
+
+Do NOT bump the major version for features, UI changes, or fixes — only for new modes.
