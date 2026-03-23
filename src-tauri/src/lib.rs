@@ -12,6 +12,11 @@ pub fn run() {
             commands::save_annotated_image,
             commands::get_image_as_base64,
             commands::save_pdf,
+            commands::validate_url_list,
+            commands::download_single_url_image,
+            commands::download_url_images,
+            commands::fetch_url_image_as_base64,
+            commands::delete_url_cache,
             sleep_prevention::prevent_display_sleep,
             sleep_prevention::allow_display_sleep,
         ])

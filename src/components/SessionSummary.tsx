@@ -19,9 +19,9 @@ function Thumbnail({ viewedImage, isSelected, onToggleSelect }: ThumbnailProps) 
   useEffect(() => {
     const loadThumbnail = async () => {
       try {
-        const data = await invoke<string>("get_image_as_base64", {
-          imagePath: viewedImage.path,
-        });
+        const data = viewedImage.path.startsWith("http")
+          ? await invoke<string>("fetch_url_image_as_base64", { url: viewedImage.path })
+          : await invoke<string>("get_image_as_base64", { imagePath: viewedImage.path });
         setThumbnailData(data);
       } catch (err) {
         console.error("Failed to load thumbnail:", err);
@@ -140,20 +140,21 @@ function Thumbnail({ viewedImage, isSelected, onToggleSelect }: ThumbnailProps) 
 }
 
 export default function SessionSummary() {
-  const { 
-    viewedImages, 
-    resetSession, 
-    folderPath, 
+  const {
+    viewedImages,
+    resetSession,
+    folderPath,
     folderPaths,
-    folderName, 
+    folderName,
     folderNames,
-    images, 
+    images,
     timerDuration,
     breakDuration,
     imageOpacity,
     isTimedMode,
     markupEnabled,
     setGalleryIndex,
+    getPersistencePath,
   } = useSessionStore();
   const { saveSession } = useSavedSessionsStore();
   
@@ -203,16 +204,15 @@ export default function SessionSummary() {
 
   // Save session (non-destructive) - only include practiced images
   const handleSaveSession = async (name: string) => {
-    // Only include images user actually practiced on (skipped images excluded)
-    const imageOrder = viewedImages.map((v) => v.path);
+    const imageOrder = viewedImages.map((v) => getPersistencePath(v.path));
 
-    // If markup was disabled, save imageOrder only (empty drawings)
     const drawings: Record<string, ImageDrawing> = !markupEnabled ? {} : (() => {
       const out: Record<string, ImageDrawing> = {};
       for (const viewed of viewedImages) {
         if (viewed.drawingData && viewed.drawingData.lines.length > 0) {
-          out[viewed.path] = {
-            imagePath: viewed.path,
+          const key = getPersistencePath(viewed.path);
+          out[key] = {
+            imagePath: key,
             drawingData: viewed.drawingData,
             savedAt: viewed.viewedAt,
           };

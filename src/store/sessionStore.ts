@@ -1,6 +1,18 @@
 import { create } from "zustand";
 import { BrushType, HistoryState, useDrawingStore } from "./drawingStore";
 
+export interface SessionImage {
+  path: string;
+  sourceType: "local" | "url-stream" | "url-cached";
+  collectionId?: string;
+  originalUrl?: string;
+}
+
+/** Persistence key for saving sessions - use originalUrl for url-cached, else path */
+export function getPersistencePath(img: SessionImage): string {
+  return img.originalUrl ?? img.path;
+}
+
 export interface DrawingData {
   lines: Array<{
     points: number[];
@@ -40,8 +52,8 @@ interface SessionState {
   folderPaths: string[]; // Multiple folder paths
   folderName: string | null; // Legacy single folder name
   folderNames: string[]; // Multiple folder names
-  allImages: string[]; // All images from folder(s)
-  images: string[]; // Images for current session (may be limited)
+  allImages: SessionImage[]; // All images from sources
+  images: SessionImage[]; // Images for current session (may be limited)
   currentImageIndex: number;
   maxImages: number | null; // Limit for session
   
@@ -51,6 +63,7 @@ interface SessionState {
   isInSetup: boolean; // Pre-session setup screen
   isViewingGallery: boolean; // Gallery view mode for saved sessions
   isViewingOnly: boolean; // True when viewing saved session (from Previous Sessions "View")
+  isBrowsingGallery: boolean; // True when browsing current folder selection (no session)
   returnToPreviousSessions: boolean; // Flag to tell FolderPicker to show Previous Sessions on mount
   galleryIndex: number; // Current image in gallery view
   viewedImages: ViewedImage[];
@@ -89,11 +102,12 @@ interface SessionState {
   setFolderPaths: (paths: string[]) => void;
   setFolderName: (name: string) => void;
   setFolderNames: (names: string[]) => void;
-  setImages: (images: string[]) => void;
+  setImages: (images: SessionImage[]) => void;
   setMaxImages: (count: number | null) => void;
   enterSetup: () => void;
   exitSetup: () => void;
   startSession: (options?: { excludePath?: string; includeFirstPath?: string }) => void;
+  getPersistencePath: (displayPath: string) => string;
   viewSession: (data: ViewSessionData) => void;
   endSession: () => void;
   resetSession: () => void;
@@ -101,6 +115,8 @@ interface SessionState {
   // Gallery view actions
   setGalleryIndex: (index: number) => void;
   exitGallery: (returnToPreviousSessions?: boolean) => void;
+  enterBrowseMode: () => void;
+  exitBrowseMode: () => void;
   clearReturnToPreviousSessions: () => void;
   
   nextImage: () => void;
@@ -155,6 +171,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   isInSetup: false,
   isViewingGallery: false,
   isViewingOnly: false,
+  isBrowsingGallery: false,
   returnToPreviousSessions: false,
   galleryIndex: 0,
   viewedImages: [],
@@ -187,6 +204,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const shuffled = shuffleArray(images);
     set({ allImages: shuffled, images: shuffled });
   },
+
+  getPersistencePath: (displayPath) => {
+    const state = get();
+    const img = state.allImages.find((i) => i.path === displayPath);
+    return img ? getPersistencePath(img) : displayPath;
+  },
   
   setMaxImages: (count) => set({ maxImages: count }),
   
@@ -197,51 +220,50 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   startSession: (options?: { excludePath?: string; includeFirstPath?: string }) => {
     const state = get();
     const { excludePath, includeFirstPath } = options || {};
-    
-    // Filter out the excluded image if provided
+
     let availableImages = state.allImages;
     if (excludePath) {
-      availableImages = state.allImages.filter(img => img !== excludePath);
+      availableImages = state.allImages.filter((img) => img.path !== excludePath);
     }
-    
+
     const maxCount = state.maxImages;
-    let sessionImages = maxCount && maxCount < availableImages.length
-      ? availableImages.slice(0, maxCount)
-      : availableImages;
-    
-    // If includeFirstPath is set, ensure it's at the beginning
+    let sessionImages =
+      maxCount && maxCount < availableImages.length
+        ? availableImages.slice(0, maxCount)
+        : availableImages;
+
     if (includeFirstPath) {
-      // Remove it from wherever it is
-      sessionImages = sessionImages.filter(img => img !== includeFirstPath);
-      // Add it to the front
-      sessionImages = [includeFirstPath, ...sessionImages];
-      // Trim back to maxCount if needed
+      sessionImages = sessionImages.filter((img) => img.path !== includeFirstPath);
+      const firstImg = state.allImages.find((i) => i.path === includeFirstPath);
+      if (firstImg) sessionImages = [firstImg, ...sessionImages];
       if (maxCount && sessionImages.length > maxCount) {
         sessionImages = sessionImages.slice(0, maxCount);
       }
     }
-    
-    // Preserve current drawing data if includeFirstPath is set (keeping practice drawings)
+
     const preserveDrawing = includeFirstPath && state.currentDrawingData.lines.length > 0;
-    
-    // Clear the drawing store history for the new session
+
     useDrawingStore.getState().clearHistory();
-    
-    set({ 
+
+    set({
       images: sessionImages,
-      isSessionActive: true, 
+      isSessionActive: true,
       isSessionEnded: false,
       isInSetup: false,
       isOnBreak: false,
-      viewedImages: preserveDrawing ? [{
-        path: includeFirstPath,
-        viewedAt: Date.now(),
-        drawingData: state.currentDrawingData,
-        hasMarkup: true,
-      }] : [],
+      viewedImages: preserveDrawing
+        ? [
+            {
+              path: includeFirstPath,
+              viewedAt: Date.now(),
+              drawingData: state.currentDrawingData,
+              hasMarkup: true,
+            },
+          ]
+        : [],
       currentImageIndex: 0,
       currentDrawingData: preserveDrawing ? state.currentDrawingData : { lines: [] },
-      imageHistories: {}, // Clear per-image histories for new session
+      imageHistories: {},
       isTimerPaused: false,
       viewedSessionId: null,
       viewedSessionName: null,
@@ -249,7 +271,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
   
   viewSession: (data) => {
-    // Build viewedImages from imageOrder (handles sessions with or without drawings)
     const viewedImages: ViewedImage[] = data.imageOrder.map((path) => {
       const drawing = data.drawings?.[path];
       return {
@@ -259,10 +280,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         hasMarkup: drawing ? drawing.drawingData.lines.length > 0 : false,
       };
     });
-    
+
+    const sessionImages: SessionImage[] = data.imageOrder.map((path) => ({
+      path,
+      sourceType: path.startsWith("http") ? ("url-stream" as const) : ("local" as const),
+    }));
+
     set({
-      images: data.imageOrder,
-      allImages: data.imageOrder,
+      images: sessionImages,
+      allImages: sessionImages,
       currentImageIndex: data.currentIndex,
       isSessionActive: false,
       isSessionEnded: false,
@@ -288,9 +314,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   
   endSession: () => {
     const state = get();
-    // Save current image drawing before ending
     if (state.images.length > 0) {
-      const currentImage = state.images[state.currentImageIndex];
+      const currentImg = state.images[state.currentImageIndex];
+      const currentImage = currentImg.path;
       const hasMarkup = state.currentDrawingData.lines.length > 0;
       
       // Check if already in viewed images
@@ -336,6 +362,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     isInSetup: false,
     isViewingGallery: false,
     isViewingOnly: false,
+    isBrowsingGallery: false,
     returnToPreviousSessions: false,
     galleryIndex: 0,
     isOnBreak: false,
@@ -353,11 +380,48 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   exitGallery: (returnToPreviousSessions = false) => set({
     isViewingGallery: false,
     isViewingOnly: false,
+    isBrowsingGallery: false,
     returnToPreviousSessions,
     galleryIndex: 0,
     images: [],
     viewedImages: [],
     viewedSessionId: null,
+    viewedSessionName: null,
+  }),
+
+  enterBrowseMode: () => {
+    const state = get();
+    let imagesToBrowse = state.allImages;
+    const maxCount = state.maxImages;
+    if (maxCount && maxCount < imagesToBrowse.length) {
+      imagesToBrowse = imagesToBrowse.slice(0, maxCount);
+    }
+    const shuffled = shuffleArray(imagesToBrowse);
+    const viewedImages: ViewedImage[] = shuffled.map((img) => ({
+      path: img.path,
+      viewedAt: Date.now(),
+      drawingData: null,
+      hasMarkup: false,
+    }));
+    const folderLabel = state.folderNames?.length
+      ? state.folderNames.join(", ")
+      : `${viewedImages.length} images`;
+    set({
+      viewedImages,
+      isViewingGallery: true,
+      isViewingOnly: false,
+      isBrowsingGallery: true,
+      viewedSessionName: `Browsing ${folderLabel}`,
+      galleryIndex: 0,
+      viewedSessionId: null,
+    });
+  },
+
+  exitBrowseMode: () => set({
+    isViewingGallery: false,
+    isBrowsingGallery: false,
+    galleryIndex: 0,
+    viewedImages: [],
     viewedSessionName: null,
   }),
   
@@ -370,9 +434,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   nextImage: () => {
     const state = get();
     if (state.images.length === 0) return;
-    
-    // Save current drawing before moving
-    const currentImage = state.images[state.currentImageIndex];
+
+    const currentImg = state.images[state.currentImageIndex];
+    const currentImage = currentImg.path;
     const hasMarkup = state.currentDrawingData.lines.length > 0;
     
     // Save current image's undo history
@@ -402,7 +466,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
     
     const nextIndex = (state.currentImageIndex + 1) % state.images.length;
-    const nextImage = state.images[nextIndex];
+    const nextImg = state.images[nextIndex];
+    const nextImage = nextImg.path;
     
     // Check if next image was already viewed and has drawing data
     const nextImageViewed = updatedViewed.find(v => v.path === nextImage);
@@ -426,9 +491,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   previousImage: () => {
     const state = get();
     if (state.images.length === 0) return;
-    
-    // Save current image's undo history before moving
-    const currentImage = state.images[state.currentImageIndex];
+
+    const currentImg = state.images[state.currentImageIndex];
+    const currentImage = currentImg.path;
     const drawingStore = useDrawingStore.getState();
     const currentHistory = drawingStore.getHistoryState();
     const updatedHistories = {
@@ -436,11 +501,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       [currentImage]: currentHistory,
     };
     
-    const prevIndex = state.currentImageIndex === 0 
-      ? state.images.length - 1 
+    const prevIndex = state.currentImageIndex === 0
+      ? state.images.length - 1
       : state.currentImageIndex - 1;
-    const prevImage = state.images[prevIndex];
-    
+    const prevImage = state.images[prevIndex].path;
+
     // Check if prev image was already viewed and has drawing data
     const prevImageViewed = state.viewedImages.find(v => v.path === prevImage);
     
@@ -462,37 +527,32 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   skipCurrentImage: () => {
     const state = get();
     if (state.images.length <= 1) {
-      // Can't skip if only one image left, end session instead
       get().endSession();
       return;
     }
-    
-    const currentImage = state.images[state.currentImageIndex];
-    
-    // Remove current image from session (images and allImages)
+
+    const currentImg = state.images[state.currentImageIndex];
+    const currentImage = currentImg.path;
+
     const newImages = state.images.filter((_, idx) => idx !== state.currentImageIndex);
-    const newAllImages = state.allImages.filter(path => path !== currentImage);
-    
-    // Remove from viewedImages if present
-    const newViewedImages = state.viewedImages.filter(v => v.path !== currentImage);
-    
-    // Remove history for skipped image
+    const newAllImages = state.allImages.filter((img) => img.path !== currentImage);
+
+    const newViewedImages = state.viewedImages.filter((v) => v.path !== currentImage);
+
     const newHistories = { ...state.imageHistories };
     delete newHistories[currentImage];
-    
-    // Adjust currentImageIndex if needed
+
     let newIndex = state.currentImageIndex;
     if (newIndex >= newImages.length) {
       newIndex = newImages.length - 1;
     }
-    
-    // Get drawing data for new current image if it was viewed before
-    const newCurrentImage = newImages[newIndex];
-    const newCurrentViewed = newViewedImages.find(v => v.path === newCurrentImage);
-    
-    // Load history for new current image (or clear if none)
+
+    const newCurrentImg = newImages[newIndex];
+    const newCurrentImagePath = newCurrentImg.path;
+    const newCurrentViewed = newViewedImages.find((v) => v.path === newCurrentImagePath);
+
     const drawingStore = useDrawingStore.getState();
-    const newHistory = newHistories[newCurrentImage];
+    const newHistory = newHistories[newCurrentImagePath];
     if (newHistory) {
       drawingStore.setHistoryState(newHistory);
     } else {
@@ -532,8 +592,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   saveCurrentImageDrawing: () => {
     const state = get();
     if (state.images.length === 0) return;
-    
-    const currentImage = state.images[state.currentImageIndex];
+
+    const currentImage = state.images[state.currentImageIndex].path;
     const hasMarkup = state.currentDrawingData.lines.length > 0;
     
     const existingIndex = state.viewedImages.findIndex(v => v.path === currentImage);

@@ -15,6 +15,7 @@ export default function SessionView() {
     images,
     currentImageIndex,
     viewedImages,
+    getPersistencePath,
     endSession,
     resetSession,
     isOnBreak,
@@ -45,7 +46,7 @@ export default function SessionView() {
   const [showSaveModal, setShowSaveModal] = useState(false);
   const [showEndConfirmModal, setShowEndConfirmModal] = useState(false);
 
-  const currentImage = images[currentImageIndex];
+  const currentImage = images[currentImageIndex]?.path;
 
   const hasViewedImages = viewedImages.length > 0;
 
@@ -160,19 +161,17 @@ export default function SessionView() {
     // First, save current drawing to viewedImages
     saveCurrentImageDrawing();
     
-    // Get updated viewedImages (need to get fresh state after save)
     const state = useSessionStore.getState();
-    
-    // Only include images user actually practiced on (skipped images excluded)
-    const imageOrder = state.viewedImages.map((v) => v.path);
 
-    // If markup was disabled, save imageOrder only (empty drawings)
+    const imageOrder = state.viewedImages.map((v) => getPersistencePath(v.path));
+
     const drawings: Record<string, ImageDrawing> = !markupEnabled ? {} : (() => {
       const out: Record<string, ImageDrawing> = {};
       for (const viewed of state.viewedImages) {
         if (viewed.drawingData && viewed.drawingData.lines.length > 0) {
-          out[viewed.path] = {
-            imagePath: viewed.path,
+          const key = getPersistencePath(viewed.path);
+          out[key] = {
+            imagePath: key,
             drawingData: viewed.drawingData,
             savedAt: viewed.viewedAt,
           };
@@ -318,6 +317,7 @@ export default function SessionView() {
           <div className="absolute inset-0 flex items-center justify-center">
             <ImageViewer
               imagePath={currentImage}
+              prefetchSources={images.slice(currentImageIndex + 1, currentImageIndex + 3).map((img) => img.path)}
               onDimensionsChange={(width, height) => {
                 setImageDimensions({ width, height });
                 // Delay canvas rendering slightly to prevent blocking

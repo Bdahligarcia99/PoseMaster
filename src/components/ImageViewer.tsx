@@ -2,38 +2,76 @@ import { useEffect, useState, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useSessionStore } from "../store/sessionStore";
 
-interface ImageViewerProps {
-  imagePath: string;
-  onDimensionsChange?: (width: number, height: number) => void;
-  opacity?: number; // Optional override, otherwise uses store
+function isUrl(path: string): boolean {
+  return path.startsWith("http://") || path.startsWith("https://");
 }
 
-export default function ImageViewer({ imagePath, onDimensionsChange, opacity }: ImageViewerProps) {
+// Prefetch cache for URL images (stream mode) - key: url, value: base64 data URL
+const prefetchCache = new Map<string, string>();
+const MAX_PREFETCH_CACHE = 4;
+
+interface ImageViewerProps {
+  imagePath?: string | null;
+  onDimensionsChange?: (width: number, height: number) => void;
+  opacity?: number; // Optional override, otherwise uses store
+  /** Next 1-2 image paths/URLs to prefetch when current is a stream URL */
+  prefetchSources?: string[];
+}
+
+export default function ImageViewer({ imagePath, onDimensionsChange, opacity, prefetchSources = [] }: ImageViewerProps) {
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [dimensions, setDimensions] = useState<{ width: number; height: number } | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const loadingRef = useRef(false);
-  
+
   const storeOpacity = useSessionStore((state) => state.imageOpacity);
   const effectiveOpacity = opacity !== undefined ? opacity : storeOpacity;
 
+  const loadImage = useCallback(async (path: string): Promise<string> => {
+    if (isUrl(path)) {
+      return invoke<string>("fetch_url_image_as_base64", { url: path });
+    }
+    return invoke<string>("get_image_as_base64", { imagePath: path });
+  }, []);
+
   useEffect(() => {
-    // Prevent duplicate loads
-    if (loadingRef.current) return;
+    if (!imagePath || loadingRef.current) return;
     loadingRef.current = true;
-    
+
     setIsLoading(true);
     setError(null);
     setDimensions(null);
-    
-    // Load image via Rust backend
-    invoke<string>("get_image_as_base64", { imagePath })
+
+    // Check prefetch cache first (stream mode)
+    const cached = isUrl(imagePath) ? prefetchCache.get(imagePath) : null;
+    if (cached) {
+      prefetchCache.delete(imagePath);
+      setImageUrl(cached);
+      setIsLoading(false);
+      loadingRef.current = false;
+      return;
+    }
+
+    loadImage(imagePath)
       .then((base64Data) => {
         setImageUrl(base64Data);
         setIsLoading(false);
         loadingRef.current = false;
+
+        // Prefetch next 1-2 URLs in stream mode for smoother experience
+        if (isUrl(imagePath) && prefetchSources.length > 0) {
+          const toPrefetch = prefetchSources.filter(isUrl).slice(0, 2);
+          for (const src of toPrefetch) {
+            if (prefetchCache.has(src)) continue;
+            loadImage(src).then((data) => {
+              if (prefetchCache.size < MAX_PREFETCH_CACHE) {
+                prefetchCache.set(src, data);
+              }
+            }).catch(() => { /* ignore prefetch errors */ });
+          }
+        }
       })
       .catch((err) => {
         console.error("Error loading image:", err);
@@ -41,11 +79,11 @@ export default function ImageViewer({ imagePath, onDimensionsChange, opacity }: 
         setIsLoading(false);
         loadingRef.current = false;
       });
-    
+
     return () => {
       loadingRef.current = false;
     };
-  }, [imagePath]);
+  }, [imagePath, loadImage, prefetchSources]);
 
   // Calculate displayed dimensions when image loads
   const handleImageLoad = useCallback((e: React.SyntheticEvent<HTMLImageElement>) => {
@@ -73,6 +111,14 @@ export default function ImageViewer({ imagePath, onDimensionsChange, opacity }: 
     setDimensions({ width: displayWidth, height: displayHeight });
     onDimensionsChange?.(displayWidth, displayHeight);
   }, [onDimensionsChange]);
+
+  if (!imagePath) {
+    return (
+      <div className="h-full flex items-center justify-center bg-dark-bg text-dark-muted">
+        No image
+      </div>
+    );
+  }
 
   if (isLoading) {
     return (
@@ -103,9 +149,26 @@ export default function ImageViewer({ imagePath, onDimensionsChange, opacity }: 
   if (error) {
     return (
       <div className="h-full flex items-center justify-center bg-dark-bg">
-        <div className="text-center p-4">
-          <div className="text-red-400 mb-2">Failed to load image</div>
-          <div className="text-dark-muted text-sm">{error}</div>
+        <div className="text-center p-4 max-w-md">
+          <div className="text-red-400 mb-2 font-medium">Failed to load image</div>
+          <div className="text-dark-muted text-sm mb-4 break-all">{error}</div>
+          <button
+            onClick={() => {
+              setError(null);
+              setIsLoading(true);
+              loadingRef.current = false;
+              loadImage(imagePath)
+                .then(setImageUrl)
+                .then(() => setIsLoading(false))
+                .catch((err) => {
+                  setError(err instanceof Error ? err.message : String(err));
+                  setIsLoading(false);
+                });
+            }}
+            className="px-4 py-2 bg-dark-accent hover:bg-blue-600 rounded-lg text-dark-text text-sm font-medium"
+          >
+            Retry
+          </button>
         </div>
       </div>
     );

@@ -87,7 +87,9 @@ export default function ExportOptionsModal({
   };
 
   const loadImageAsBase64 = async (imagePath: string): Promise<string> => {
-    return await invoke<string>("get_image_as_base64", { imagePath });
+    return imagePath.startsWith("http")
+      ? invoke<string>("fetch_url_image_as_base64", { url: imagePath })
+      : invoke<string>("get_image_as_base64", { imagePath });
   };
 
   const renderImageWithDrawing = async (

@@ -1,0 +1,28 @@
+---
+description: Identifies this as the PoseMaster project and detects wrong-project requests
+alwaysApply: true
+---
+
+# Project Context: PoseMaster (gesture-practice)
+
+This is the **PoseMaster desktop app** for gesture/figure drawing practice.
+
+## Wrong Project Detection
+
+If the user asks about any of the following topics, they are likely in the wrong Cursor window:
+
+- dahligarciamarquez
+- personal website
+- blog posts
+- Supabase auth (unless specifically about this project)
+- Vercel deployment
+- blog styling
+- website navbar
+- contact page
+- about page
+- posts/articles
+
+**When detected**: Politely remind the user:
+> "It looks like you're asking about your website, but we're currently in the PoseMaster project window. Would you like to switch to the website workspace?"
+
+Then wait for confirmation before proceeding.

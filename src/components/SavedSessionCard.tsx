@@ -17,7 +17,10 @@ export default function SavedSessionCard({ session, onView, onExport }: SavedSes
   // Load thumbnail from first image
   useEffect(() => {
     if (session.imageOrder.length > 0) {
-      invoke<string>("get_image_as_base64", { imagePath: session.imageOrder[0] })
+      const path = session.imageOrder[0];
+      (path.startsWith("http")
+        ? invoke<string>("fetch_url_image_as_base64", { url: path })
+        : invoke<string>("get_image_as_base64", { imagePath: path }))
         .then(setThumbnailUrl)
         .catch(() => setThumbnailUrl(null));
     }

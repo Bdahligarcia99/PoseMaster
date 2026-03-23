@@ -67,13 +67,13 @@ export default function SessionSetup() {
       
       // Pick a random image for preview (will be excluded from session)
       const randomIndex = Math.floor(Math.random() * allImages.length);
-      const imagePath = allImages[randomIndex];
+      const imagePath = allImages[randomIndex].path;
       setPreviewImagePath(imagePath);
       
       try {
-        const base64 = await invoke<string>("get_image_as_base64", {
-          imagePath,
-        });
+        const base64 = imagePath.startsWith("http")
+          ? await invoke<string>("fetch_url_image_as_base64", { url: imagePath })
+          : await invoke<string>("get_image_as_base64", { imagePath });
         setPreviewImage(base64);
       } catch (err) {
         console.error("Failed to load preview:", err);

@@ -10,7 +10,9 @@ export default function SessionGallery() {
     viewedSessionName,
     imageOpacity,
     isViewingOnly,
+    isBrowsingGallery,
     exitGallery,
+    exitBrowseMode,
   } = useSessionStore();
 
   // Go back to session summary (for completed sessions)
@@ -26,6 +28,11 @@ export default function SessionGallery() {
   // Go back to main screen
   const handleBackToMain = () => {
     exitGallery(false); // false = return to main screen
+  };
+
+  // Go back when in browse mode (returns to home)
+  const handleBackFromBrowse = () => {
+    exitBrowseMode();
   };
 
   const [mainImage, setMainImage] = useState<string | null>(null);
@@ -68,9 +75,10 @@ export default function SessionGallery() {
     const loadImage = async () => {
       setIsLoadingMain(true);
       try {
-        const base64 = await invoke<string>("get_image_as_base64", {
-          imagePath: currentImage.path,
-        });
+        const { path } = currentImage;
+        const base64 = path.startsWith("http")
+          ? await invoke<string>("fetch_url_image_as_base64", { url: path })
+          : await invoke<string>("get_image_as_base64", { imagePath: path });
         setMainImage(base64);
       } catch (err) {
         console.error("Failed to load image:", err);
@@ -87,9 +95,9 @@ export default function SessionGallery() {
       for (const img of viewedImages) {
         if (!thumbnails.has(img.path)) {
           try {
-            const base64 = await invoke<string>("get_image_as_base64", {
-              imagePath: img.path,
-            });
+            const base64 = img.path.startsWith("http")
+              ? await invoke<string>("fetch_url_image_as_base64", { url: img.path })
+              : await invoke<string>("get_image_as_base64", { imagePath: img.path });
             setThumbnails((prev) => new Map(prev).set(img.path, base64));
           } catch (err) {
             console.error("Failed to load thumbnail:", err);
@@ -131,8 +139,9 @@ export default function SessionGallery() {
       } else if (e.key === "ArrowRight") {
         goToNext();
       } else if (e.key === "Escape") {
-        // Escape goes back to Previous Sessions if viewing only, otherwise to summary
-        if (isViewingOnly) {
+        if (isBrowsingGallery) {
+          handleBackFromBrowse();
+        } else if (isViewingOnly) {
           handleBackToPreviousSessions();
         } else {
           handleBackToSummary();
@@ -144,7 +153,7 @@ export default function SessionGallery() {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [galleryIndex, viewedImages.length, isViewingOnly]);
+  }, [galleryIndex, viewedImages.length, isViewingOnly, isBrowsingGallery]);
 
   const getFileName = (path: string) => {
     return path.split("/").pop() || path.split("\\").pop() || path;
@@ -154,7 +163,19 @@ export default function SessionGallery() {
     <div className="h-screen flex flex-col bg-dark-bg">
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 bg-dark-surface border-b border-dark-accent">
-        {isViewingOnly ? (
+        {isBrowsingGallery ? (
+          // Single back button when browsing (from New Session)
+          <button
+            onClick={handleBackFromBrowse}
+            className="flex items-center gap-2 px-3 py-1.5 text-dark-muted hover:text-dark-text 
+                       hover:bg-dark-accent rounded-lg transition-colors"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+            </svg>
+            Back
+          </button>
+        ) : isViewingOnly ? (
           // Two buttons when viewing from Previous Sessions
           <div className="flex items-center gap-2">
             <button

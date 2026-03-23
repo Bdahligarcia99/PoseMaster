@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 use walkdir::WalkDir;
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ImageInfo {
@@ -237,4 +237,294 @@ pub fn save_pdf(base64_data: String, output_path: String) -> Result<String, Stri
         .map_err(|e| format!("Failed to save PDF: {}", e))?;
     
     Ok(output_path)
+}
+
+// --- URL image commands ---
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UrlValidationResult {
+    pub url: String,
+    pub valid: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DownloadResult {
+    pub url: String,
+    pub local_path: String,
+    pub success: bool,
+    pub error: Option<String>,
+}
+
+/// Validate URL list - check URLs are accessible images
+#[tauri::command]
+pub async fn validate_url_list(urls: Vec<String>) -> Result<Vec<UrlValidationResult>, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+
+    let mut results = Vec::with_capacity(urls.len());
+    for url in urls {
+        let result = match client.head(&url).send().await {
+            Ok(resp) => {
+                let status = resp.status();
+                let valid = status.is_success()
+                    && resp
+                        .headers()
+                        .get("content-type")
+                        .and_then(|v| v.to_str().ok())
+                        .map(|ct| ct.to_lowercase().starts_with("image/"))
+                        .unwrap_or(false);
+                UrlValidationResult {
+                    url: url.clone(),
+                    valid,
+                    error: if valid {
+                        None
+                    } else if !status.is_success() {
+                        Some(format!("HTTP {}", status))
+                    } else {
+                        Some("Not an image (invalid content-type)".to_string())
+                    },
+                }
+            }
+            Err(e) => UrlValidationResult {
+                url: url.clone(),
+                valid: false,
+                error: Some(e.to_string()),
+            },
+        };
+        results.push(result);
+    }
+    Ok(results)
+}
+
+fn extension_from_content_type(ct: &str) -> &str {
+    let ct = ct.to_lowercase();
+    if ct.contains("jpeg") || ct.contains("jpg") {
+        "jpg"
+    } else if ct.contains("png") {
+        "png"
+    } else if ct.contains("gif") {
+        "gif"
+    } else if ct.contains("webp") {
+        "webp"
+    } else if ct.contains("bmp") {
+        "bmp"
+    } else if ct.contains("tiff") {
+        "tiff"
+    } else {
+        "jpg"
+    }
+}
+
+/// Download a single image to cache (for progressive download with progress UI)
+#[tauri::command]
+pub async fn download_single_url_image(
+    url: String,
+    cache_folder: String,
+    collection_id: String,
+    index: usize,
+) -> Result<DownloadResult, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+
+    let cache_path = Path::new(&cache_folder);
+    if !cache_path.exists() {
+        fs::create_dir_all(cache_path)
+            .map_err(|e| format!("Failed to create cache folder: {}", e))?;
+    }
+
+    let result = match client.get(&url).send().await {
+        Ok(resp) => {
+            if !resp.status().is_success() {
+                DownloadResult {
+                    url: url.clone(),
+                    local_path: String::new(),
+                    success: false,
+                    error: Some(format!("HTTP {}", resp.status())),
+                }
+            } else {
+                let content_type = resp
+                    .headers()
+                    .get("content-type")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("image/jpeg");
+                let ext = extension_from_content_type(content_type);
+                let filename = format!("{}_{:04}.{}", collection_id, index, ext);
+                let local_path = cache_path.join(&filename);
+
+                match resp.bytes().await {
+                    Ok(bytes) => {
+                        if let Err(e) = fs::write(&local_path, &bytes) {
+                            DownloadResult {
+                                url: url.clone(),
+                                local_path: String::new(),
+                                success: false,
+                                error: Some(format!("Failed to write file: {}", e)),
+                            }
+                        } else {
+                            DownloadResult {
+                                url: url.clone(),
+                                local_path: local_path.to_string_lossy().to_string(),
+                                success: true,
+                                error: None,
+                            }
+                        }
+                    }
+                    Err(e) => DownloadResult {
+                        url: url.clone(),
+                        local_path: String::new(),
+                        success: false,
+                        error: Some(e.to_string()),
+                    },
+                }
+            }
+        }
+        Err(e) => DownloadResult {
+            url: url.clone(),
+            local_path: String::new(),
+            success: false,
+            error: Some(e.to_string()),
+        },
+    };
+    Ok(result)
+}
+
+/// Download images from URLs to cache folder (bulk - use download_single_url_image for progress)
+#[tauri::command]
+pub async fn download_url_images(
+    urls: Vec<String>,
+    cache_folder: String,
+    collection_id: String,
+) -> Result<Vec<DownloadResult>, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+
+    let cache_path = Path::new(&cache_folder);
+    if !cache_path.exists() {
+        fs::create_dir_all(cache_path)
+            .map_err(|e| format!("Failed to create cache folder: {}", e))?;
+    }
+
+    let mut results = Vec::with_capacity(urls.len());
+    for (i, url) in urls.iter().enumerate() {
+        let result = match client.get(url).send().await {
+            Ok(resp) => {
+                if !resp.status().is_success() {
+                    results.push(DownloadResult {
+                        url: url.clone(),
+                        local_path: String::new(),
+                        success: false,
+                        error: Some(format!("HTTP {}", resp.status())),
+                    });
+                    continue;
+                }
+                let content_type = resp
+                    .headers()
+                    .get("content-type")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("image/jpeg");
+                let ext = extension_from_content_type(content_type);
+                let filename = format!("{}_{:04}.{}", collection_id, i, ext);
+                let local_path = cache_path.join(&filename);
+
+                match resp.bytes().await {
+                    Ok(bytes) => {
+                        if let Err(e) = fs::write(&local_path, &bytes) {
+                            DownloadResult {
+                                url: url.clone(),
+                                local_path: String::new(),
+                                success: false,
+                                error: Some(format!("Failed to write file: {}", e)),
+                            }
+                        } else {
+                            DownloadResult {
+                                url: url.clone(),
+                                local_path: local_path.to_string_lossy().to_string(),
+                                success: true,
+                                error: None,
+                            }
+                        }
+                    }
+                    Err(e) => DownloadResult {
+                        url: url.clone(),
+                        local_path: String::new(),
+                        success: false,
+                        error: Some(e.to_string()),
+                    },
+                }
+            }
+            Err(e) => DownloadResult {
+                url: url.clone(),
+                local_path: String::new(),
+                success: false,
+                error: Some(e.to_string()),
+            },
+        };
+        results.push(result);
+    }
+    Ok(results)
+}
+
+/// Fetch single image from URL as base64 (for streaming mode)
+#[tauri::command]
+pub async fn fetch_url_image_as_base64(url: String) -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("Request failed: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}: {}", resp.status(), url));
+    }
+
+    let content_type = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "image/jpeg".to_string());
+
+    let mime_type = if content_type.to_lowercase().contains("jpeg")
+        || content_type.to_lowercase().contains("jpg")
+    {
+        "image/jpeg"
+    } else if content_type.to_lowercase().contains("png") {
+        "image/png"
+    } else if content_type.to_lowercase().contains("gif") {
+        "image/gif"
+    } else if content_type.to_lowercase().contains("webp") {
+        "image/webp"
+    } else if content_type.to_lowercase().contains("bmp") {
+        "image/bmp"
+    } else if content_type.to_lowercase().contains("tiff") {
+        "image/tiff"
+    } else {
+        "image/jpeg"
+    };
+
+    let bytes = resp.bytes().await.map_err(|e| format!("Failed to read body: {}", e))?;
+    let base64_data = BASE64.encode(&bytes);
+    Ok(format!("data:{};base64,{}", mime_type, base64_data))
+}
+
+/// Delete cached collection
+#[tauri::command]
+pub fn delete_url_cache(cache_folder: String) -> Result<(), String> {
+    let path = Path::new(&cache_folder);
+    if path.exists() {
+        fs::remove_dir_all(path).map_err(|e| format!("Failed to delete cache: {}", e))?;
+    }
+    Ok(())
 }
