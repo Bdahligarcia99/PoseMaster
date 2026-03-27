@@ -166,9 +166,6 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         if (loadedSettings.markupEnabled === undefined) {
           loadedSettings.markupEnabled = true;
         }
-        // Remember flags always load as false (never persist as checked)
-        loadedSettings.rememberHomeSettings = false;
-        loadedSettings.rememberSetupSettings = false;
         if (loadedSettings.imageSourceFilter === undefined) {
           loadedSettings.imageSourceFilter = "all";
         }

@@ -95,7 +95,7 @@ export const usePresetsStore = create<PresetsState>((set, get) => ({
         const rawPresets = Array.isArray(data.presets) ? data.presets : [];
         // Migrate: "continuous" imageCountMode -> "all"
         const presets = rawPresets.map((p: Preset) =>
-          p.settings?.imageCountMode === "continuous"
+          (p.settings?.imageCountMode as string | undefined) === "continuous"
             ? { ...p, settings: { ...p.settings, imageCountMode: "all" as const } }
             : p
         );

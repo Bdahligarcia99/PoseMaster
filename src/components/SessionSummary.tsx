@@ -147,7 +147,6 @@ export default function SessionSummary() {
     folderPaths,
     folderName,
     folderNames,
-    images,
     timerDuration,
     breakDuration,
     imageOpacity,

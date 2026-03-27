@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, lazy, Suspense } from "react";
+import { useState, useEffect, useCallback, useMemo, lazy, Suspense } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useSessionStore } from "../store/sessionStore";
 import { useSavedSessionsStore, ImageDrawing } from "../store/savedSessionsStore";
@@ -28,8 +28,6 @@ export default function SessionView() {
     imageOpacity,
     imageZoom,
     markupEnabled,
-    eraserDisabled,
-    currentDrawingData,
     saveCurrentImageDrawing,
     skipCurrentImage,
   } = useSessionStore();
@@ -47,6 +45,12 @@ export default function SessionView() {
   const [showEndConfirmModal, setShowEndConfirmModal] = useState(false);
 
   const currentImage = images[currentImageIndex]?.path;
+
+  /** Stable reference so ImageViewer's effect does not re-run on every parent render */
+  const prefetchSources = useMemo(
+    () => images.slice(currentImageIndex + 1, currentImageIndex + 3).map((img) => img.path),
+    [images, currentImageIndex]
+  );
 
   const hasViewedImages = viewedImages.length > 0;
 
@@ -317,7 +321,7 @@ export default function SessionView() {
           <div className="absolute inset-0 flex items-center justify-center">
             <ImageViewer
               imagePath={currentImage}
-              prefetchSources={images.slice(currentImageIndex + 1, currentImageIndex + 3).map((img) => img.path)}
+              prefetchSources={prefetchSources}
               onDimensionsChange={(width, height) => {
                 setImageDimensions({ width, height });
                 // Delay canvas rendering slightly to prevent blocking

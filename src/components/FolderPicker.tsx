@@ -169,7 +169,7 @@ export default function FolderPicker() {
   const [isValidatingUrls, setIsValidatingUrls] = useState(false);
   const hasAutoLoaded = useRef(false);
 
-  const { setFolderPath, setFolderPaths, setFolderName, setFolderNames, setImages, enterSetup, startSession, viewSession, enterBrowseMode, timerDuration, breakDuration, setBreakDuration, setMaxImages, setTimerDuration, setTimedMode, isTimedMode, imageOpacity, imageZoom, eraserDisabled, timerHidden, markupEnabled, setImageOpacity, setImageZoom, setMarkupEnabled, setEraserDisabled, setTimerHidden, returnToPreviousSessions, clearReturnToPreviousSessions } = useSessionStore();
+  const { setFolderPaths, setFolderName, setFolderNames, setImages, enterSetup, startSession, viewSession, enterBrowseMode, timerDuration, breakDuration, setBreakDuration, setMaxImages, setTimerDuration, setTimedMode, isTimedMode, imageOpacity, imageZoom, eraserDisabled, timerHidden, markupEnabled, setImageOpacity, setImageZoom, setMarkupEnabled, setEraserDisabled, setTimerHidden, returnToPreviousSessions, clearReturnToPreviousSessions } = useSessionStore();
   
   // When returning from gallery view, switch to Previous Sessions tab
   useEffect(() => {
@@ -179,8 +179,10 @@ export default function FolderPicker() {
     }
   }, [returnToPreviousSessions, clearReturnToPreviousSessions]);
   const { savedFolders, urlCollections, settings, isLoaded, loadSettings, addFolder, removeFolder, addUrlCollection, updateSettings, setLastSelectedFolders, setLastSelectedUrlCollectionIds, toggleUrlCollectionSelection, setRememberHomeSettings, clearRememberFlags, updateUrlCollectionMode, setUrlCollectionCachePath, clearUrlCollectionCache, removeUrlCollection, setImageSourceFilter } = useSettingsStore();
+  const rememberReadyForPreset =
+    settings.rememberHomeSettings === true && settings.rememberSetupSettings === true;
   const { loadSessions } = useSavedSessionsStore();
-  const { presets, isLoaded: presetsLoaded, loadPresets, savePreset, deletePreset, renamePreset } = usePresetsStore();
+  const { presets, isLoaded: _presetsLoaded, loadPresets, savePreset, deletePreset, renamePreset } = usePresetsStore();
 
   // Load images from selected folders and URL collections
   const loadImageSources = useCallback(
@@ -583,6 +585,16 @@ export default function FolderPicker() {
   // Open session setup to adjust display settings
   const handleSessionSetup = () => {
     prepareSession();
+    // When "Remember" is on for Session Setup, align session store with persisted settings
+    // so markup/opacity/zoom/etc. match what was last saved (fixes drift after session end).
+    const persisted = useSettingsStore.getState().settings;
+    if (persisted.rememberSetupSettings === true) {
+      setMarkupEnabled(persisted.markupEnabled ?? true);
+      setImageOpacity(persisted.imageOpacity);
+      setImageZoom(persisted.imageZoom);
+      setEraserDisabled(persisted.eraserDisabled);
+      setTimerHidden(persisted.timerHidden);
+    }
     enterSetup();
   };
 
@@ -634,7 +646,7 @@ export default function FolderPicker() {
     setEraserDisabled(s.eraserDisabled);
     setTimerHidden(s.timerHidden);
     setMarkupEnabled(s.markupEnabled);
-    setImageCountMode(s.imageCountMode === "continuous" ? "all" : s.imageCountMode);
+    setImageCountMode((s.imageCountMode as string) === "continuous" ? "all" : s.imageCountMode);
     setMaxImages(s.maxImages);
     if (s.imageCountMode === "specific" && s.maxImages !== null) {
       setSelectedSpecificCount(s.maxImages);
@@ -643,7 +655,7 @@ export default function FolderPicker() {
       isTimedMode: s.isTimedMode,
       timerDuration: s.timerDuration,
       breakDuration: s.breakDuration,
-      imageCountMode: s.imageCountMode === "continuous" ? "all" : s.imageCountMode,
+      imageCountMode: (s.imageCountMode as string) === "continuous" ? "all" : s.imageCountMode,
       maxImages: s.maxImages,
       imageOpacity: s.imageOpacity,
       imageZoom: s.imageZoom,
@@ -1095,16 +1107,38 @@ export default function FolderPicker() {
           {/* Remember settings - subtle footer, only when folders selected */}
           {totalImages > 0 && (
             <div className="pt-2 border-t border-dark-accent/50">
-              <label className="flex items-center gap-2 cursor-pointer text-dark-muted text-xs hover:text-dark-text/80 transition-colors">
-                <input
-                  type="checkbox"
-                  checked={settings.rememberHomeSettings === true}
-                  onChange={(e) => setRememberHomeSettings(e.target.checked)}
-                  className="w-4 h-4 rounded bg-dark-bg border-dark-accent text-blue-600 
-                             focus:ring-blue-500 focus:ring-offset-dark-bg"
-                />
-                <span>Remember current settings</span>
-              </label>
+              <div
+                className={`relative group inline-block transition-[box-shadow] ${
+                  rememberReadyForPreset ? "ring-2 ring-green-500/30 rounded-lg p-1 -m-1" : ""
+                }`}
+              >
+                <label className="flex items-center gap-2 cursor-pointer text-dark-muted text-xs hover:text-dark-text/80 transition-colors">
+                  <input
+                    type="checkbox"
+                    checked={settings.rememberHomeSettings === true}
+                    onChange={(e) => setRememberHomeSettings(e.target.checked)}
+                    className={`w-4 h-4 rounded bg-dark-bg border-dark-accent focus:ring-offset-dark-bg ${
+                      rememberReadyForPreset
+                        ? "text-green-500 focus:ring-green-500"
+                        : "text-blue-600 focus:ring-blue-500"
+                    }`}
+                  />
+                  <span>Remember current settings</span>
+                </label>
+                <div
+                  className="absolute bottom-full left-0 mb-2 px-3 py-2 bg-dark-bg border border-dark-accent
+                             rounded-lg text-xs text-dark-muted opacity-0 invisible group-hover:opacity-100 group-hover:visible
+                             transition-opacity pointer-events-none z-50 shadow-lg max-w-xs w-max"
+                >
+                  <p className="font-medium text-dark-text mb-1">Settings that will be saved:</p>
+                  <ul className="space-y-0.5 list-disc list-inside">
+                    <li>Timer Mode (Timed/Untimed)</li>
+                    <li>Image Duration</li>
+                    <li>Break Duration</li>
+                    <li>Image Count (All/Specific number)</li>
+                  </ul>
+                </div>
+              </div>
             </div>
           )}
 
@@ -1127,21 +1161,21 @@ export default function FolderPicker() {
           {/* 3. Action Block */}
           <div className="bg-dark-surface rounded-xl p-4">
             {selectedMode === "image-curator" && totalImages > 0 ? (
-              <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4">
-                <div>
+              <div className="space-y-4">
+                <div className="text-center">
                   <p className="text-dark-muted text-sm">
                     {isTimedMode ? "Session duration" : "Session"}
                   </p>
                   <p className="text-dark-text font-bold text-2xl">
                     {isTimedMode ? sessionDuration : `${sessionImageCount} images`}
                   </p>
-                  <p className="text-dark-muted text-xs">
+                  <p className="mx-auto max-w-xl text-dark-muted text-xs break-words">
                     {isTimedMode
                       ? `${sessionImageCount} images × ${timerDuration}s${breakDuration > 0 ? ` + ${sessionImageCount - 1} breaks × ${breakDuration}s` : ""}`
                       : "Advance manually with arrows"}
                   </p>
                 </div>
-                <div className="flex gap-3 flex-wrap">
+                <div className="flex flex-wrap justify-center gap-3">
                   <button
                     onClick={handleBrowseGallery}
                     className="px-6 py-4 bg-dark-accent hover:bg-blue-600 rounded-xl 
@@ -1261,6 +1295,34 @@ export default function FolderPicker() {
                                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
                                     </svg>
                                     {formatPresetDate(preset.createdAt)}
+                                  </span>
+                                </div>
+                                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-2 text-dark-muted text-xs">
+                                  <span className="flex items-center gap-1">
+                                    <svg className="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                    </svg>
+                                    {preset.settings.isTimedMode
+                                      ? `${preset.settings.timerDuration}s per image`
+                                      : "Untimed"}
+                                  </span>
+                                  {preset.settings.isTimedMode && preset.settings.breakDuration > 0 && (
+                                    <span>• {preset.settings.breakDuration}s breaks</span>
+                                  )}
+                                  <span className="flex items-center gap-1">
+                                    <svg className="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                                    </svg>
+                                    {preset.settings.imageCountMode === "all"
+                                      ? "All images"
+                                      : `${preset.settings.maxImages ?? "?"} images`}
+                                  </span>
+                                  <span
+                                    className={
+                                      preset.settings.markupEnabled ? "text-green-400" : "text-dark-muted"
+                                    }
+                                  >
+                                    {preset.settings.markupEnabled ? "✏️ Markup on" : "👁 View only"}
                                   </span>
                                 </div>
                               </div>

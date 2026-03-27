@@ -34,6 +34,8 @@ export default function SessionSetup() {
 
   const { clearHistory } = useDrawingStore();
   const { updateSettings, settings, setRememberSetupSettings } = useSettingsStore();
+  const rememberReadyForPreset =
+    settings.rememberHomeSettings === true && settings.rememberSetupSettings === true;
 
   const [previewImage, setPreviewImage] = useState<string | null>(null);
   const [previewImagePath, setPreviewImagePath] = useState<string | null>(null);
@@ -107,15 +109,25 @@ export default function SessionSetup() {
     }
   }, []);
 
-  const handleBack = () => {
+  const handleBack = async () => {
+    if (useSettingsStore.getState().settings.rememberSetupSettings === true) {
+      await updateSettings({
+        imageOpacity,
+        imageZoom,
+        markupEnabled,
+        eraserDisabled,
+        timerHidden,
+      });
+    }
     clearCurrentDrawing();
     clearHistory();
     exitSetup();
   };
 
   const handleBeginSession = async () => {
-    // Save settings before starting (only when Remember Current Settings is checked)
-    if (settings.rememberSetupSettings) {
+    // Save settings before starting (only when Remember Current Settings is checked).
+    // Use getState() so we read the latest persisted flag (not a stale render snapshot).
+    if (useSettingsStore.getState().settings.rememberSetupSettings === true) {
       await updateSettings({
         imageOpacity,
         imageZoom,
@@ -625,16 +637,39 @@ export default function SessionSetup() {
           </div>
 
           {/* Remember Current Settings */}
-          <label className="flex items-center gap-3 mb-6 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={settings.rememberSetupSettings === true}
-              onChange={(e) => setRememberSetupSettings(e.target.checked)}
-              className="w-4 h-4 rounded border-dark-accent bg-dark-bg text-blue-600 
-                         focus:ring-blue-500 focus:ring-offset-0"
-            />
-            <span className="text-dark-text text-sm">Remember current settings</span>
-          </label>
+          <div
+            className={`relative group inline-block mb-6 transition-[box-shadow] ${
+              rememberReadyForPreset ? "ring-2 ring-green-500/30 rounded-lg p-1 -m-1" : ""
+            }`}
+          >
+            <label className="flex items-center gap-3 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={settings.rememberSetupSettings === true}
+                onChange={(e) => setRememberSetupSettings(e.target.checked)}
+                className={`w-4 h-4 rounded border-dark-accent bg-dark-bg focus:ring-offset-0 ${
+                  rememberReadyForPreset
+                    ? "text-green-500 focus:ring-green-500"
+                    : "text-blue-600 focus:ring-blue-500"
+                }`}
+              />
+              <span className="text-dark-text text-sm">Remember current settings</span>
+            </label>
+            <div
+              className="absolute bottom-full left-0 mb-2 px-3 py-2 bg-dark-bg border border-dark-accent
+                         rounded-lg text-xs text-dark-muted opacity-0 invisible group-hover:opacity-100 group-hover:visible
+                         transition-opacity pointer-events-none z-50 shadow-lg max-w-xs w-max"
+            >
+              <p className="font-medium text-dark-text mb-1">Settings that will be saved:</p>
+              <ul className="space-y-0.5 list-disc list-inside">
+                <li>Image Opacity</li>
+                <li>Image Zoom</li>
+                <li>Markup Controls</li>
+                <li>Erasing</li>
+                <li>Hide Timer</li>
+              </ul>
+            </div>
+          </div>
 
           {/* Begin button */}
           <button
