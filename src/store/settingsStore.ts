@@ -41,6 +41,8 @@ interface AppSettings {
   customColors: string[]; // User's custom color swatches
   rememberHomeSettings: boolean; // Include New Session tab settings when creating preset
   rememberSetupSettings: boolean; // Include Session Setup settings when creating preset
+  /** When true, Session Setup opens with split screen enabled (if user chose to remember). */
+  preferSplitScreen: boolean;
   imageSourceFilter: ImageSourceFilter; // all | folders | url-lists
 }
 
@@ -100,6 +102,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   customColors: [],
   rememberHomeSettings: false,
   rememberSetupSettings: false,
+  preferSplitScreen: false,
   imageSourceFilter: "all",
 };
 
@@ -168,6 +171,9 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         }
         if (loadedSettings.imageSourceFilter === undefined) {
           loadedSettings.imageSourceFilter = "all";
+        }
+        if (loadedSettings.preferSplitScreen === undefined) {
+          loadedSettings.preferSplitScreen = false;
         }
 
         set({

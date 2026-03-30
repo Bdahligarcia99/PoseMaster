@@ -2,13 +2,17 @@ import { useState, useEffect, useCallback, useMemo, lazy, Suspense } from "react
 import { invoke } from "@tauri-apps/api/core";
 import { useSessionStore } from "../store/sessionStore";
 import { useSavedSessionsStore, ImageDrawing } from "../store/savedSessionsStore";
+import { useSettingsStore } from "../store/settingsStore";
 import ImageViewer from "./ImageViewer";
 import Toolbar from "./Toolbar";
+import DrawingDataOverlay from "./DrawingDataOverlay";
+import GuidelineOverlay from "./GuidelineOverlay";
 import Timer from "./Timer";
 import SaveSessionModal from "./SaveSessionModal";
 
-// Lazy load DrawingCanvas to prevent initial freeze
+// Lazy load drawing surfaces to prevent initial freeze
 const DrawingCanvas = lazy(() => import("./DrawingCanvas"));
+const FreeDrawCanvas = lazy(() => import("./FreeDrawCanvas"));
 
 export default function SessionView() {
   const {
@@ -30,8 +34,23 @@ export default function SessionView() {
     markupEnabled,
     saveCurrentImageDrawing,
     skipCurrentImage,
+    isSplitScreen,
+    splitSidesSwapped,
+    swapSplitSides,
+    toggleSplitScreen,
+    activeCanvas,
+    setActiveCanvas,
+    isCompareMode,
+    toggleCompareMode,
+    compareOverlayOpacity,
+    freeDrawDrawings,
+    imageGuidelines,
+    addGuideline,
+    updateGuidelinePosition,
+    removeGuideline,
   } = useSessionStore();
   const { saveSession } = useSavedSessionsStore();
+  const { updateSettings } = useSettingsStore();
 
   const [imageDimensions, setImageDimensions] = useState<{ width: number; height: number } | null>(
     null
@@ -121,9 +140,46 @@ export default function SessionView() {
 
   // Keyboard shortcuts
   useEffect(() => {
+    const isTypingTarget = (target: EventTarget | null) => {
+      if (!(target instanceof HTMLElement)) return false;
+      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) return true;
+      if (target instanceof HTMLSelectElement) return true;
+      return target.isContentEditable;
+    };
+
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Prevent shortcuts when typing in input fields
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+      if (isTypingTarget(e.target)) return;
+
+      const lower = e.key.toLowerCase();
+
+      if (lower === "s" && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        toggleSplitScreen();
+        if (useSettingsStore.getState().settings.rememberSetupSettings) {
+          void updateSettings({
+            preferSplitScreen: useSessionStore.getState().isSplitScreen,
+          });
+        }
+        return;
+      }
+
+      if (e.key === "Tab" && isSplitScreen) {
+        e.preventDefault();
+        setActiveCanvas(activeCanvas === "curator" ? "freeDraw" : "curator");
+        return;
+      }
+
+      if (lower === "c" && !e.ctrlKey && !e.metaKey && isSplitScreen) {
+        toggleCompareMode();
+        return;
+      }
+
+      if (lower === "x" && !e.ctrlKey && !e.metaKey) {
+        e.preventDefault();
+        if (isSplitScreen) {
+          swapSplitSides();
+        } else {
+          skipCurrentImage();
+        }
         return;
       }
 
@@ -144,11 +200,6 @@ export default function SessionView() {
           e.preventDefault();
           useSessionStore.getState().previousImage();
           break;
-        case "x": // X to remove/skip image from session
-        case "X":
-          e.preventDefault();
-          skipCurrentImage();
-          break;
         case "Escape": // Escape to end session
           e.preventDefault();
           handleEndSessionRequest();
@@ -158,7 +209,18 @@ export default function SessionView() {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [handleEndSessionRequest, handleNextImage]);
+  }, [
+    handleEndSessionRequest,
+    handleNextImage,
+    isSplitScreen,
+    activeCanvas,
+    toggleSplitScreen,
+    setActiveCanvas,
+    toggleCompareMode,
+    swapSplitSides,
+    skipCurrentImage,
+    updateSettings,
+  ]);
 
   // Save and exit handler
   const handleSaveAndExit = async (name: string) => {
@@ -184,6 +246,8 @@ export default function SessionView() {
       return out;
     })();
 
+    const splitSnap = state.getSplitPersistSnapshot();
+
     await saveSession({
         name,
         folderPath: folderPath || "",
@@ -197,6 +261,11 @@ export default function SessionView() {
         },
         imageOrder,
         drawings,
+        curatorDrawings: splitSnap.curatorDrawings,
+        freeDrawDrawings: splitSnap.freeDrawDrawings,
+        imageGuidelines: splitSnap.imageGuidelines,
+        isSplitScreen: splitSnap.isSplitScreen,
+        splitSidesSwapped: splitSnap.splitSidesSwapped,
       });
 
     // Reset and go back to home
@@ -274,6 +343,46 @@ export default function SessionView() {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
               </svg>
             </button>
+            {isSplitScreen && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => swapSplitSides()}
+                  title="Swap sides"
+                  aria-label="Swap sides"
+                  className="flex items-center justify-center p-1.5 rounded-lg text-dark-muted hover:text-dark-text bg-dark-bg border border-dark-accent transition-colors"
+                >
+                  <svg
+                    className="w-5 h-5"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth={2}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden
+                  >
+                    <path d="M7 16l-4-4 4-4" />
+                    <path d="M17 8l4 4-4 4" />
+                    <path d="M3 12h18" />
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => toggleCompareMode()}
+                  title="Show Practice strokes over the reference"
+                  aria-pressed={isCompareMode}
+                  className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-sm font-medium transition-colors
+                    ${
+                      isCompareMode
+                        ? "bg-cyan-600 text-white ring-1 ring-cyan-400/50"
+                        : "text-dark-muted hover:text-dark-text bg-dark-bg border border-dark-accent"
+                    }`}
+                >
+                  Compare
+                </button>
+              </>
+            )}
           </div>
 
           {/* Timer - only in timed mode; spacer when untimed */}
@@ -305,52 +414,257 @@ export default function SessionView() {
       </div>
 
       {/* Main content area */}
-      <div
-        ref={handleContainerRef}
-        className="flex-1 relative overflow-auto flex items-center justify-center min-h-0"
-      >
-        {/* Zoom wrapper - contains both image and canvas */}
-        <div 
-          className="relative transition-all duration-200 min-w-0 min-h-0"
-          style={{ 
-            width: `${imageZoom}%`,
-            height: `${imageZoom}%`,
-          }}
-        >
-          {/* Image layer */}
-          <div className="absolute inset-0 flex items-center justify-center">
-            <ImageViewer
-              imagePath={currentImage}
-              prefetchSources={prefetchSources}
-              onDimensionsChange={(width, height) => {
-                setImageDimensions({ width, height });
-                // Delay canvas rendering slightly to prevent blocking
-                setTimeout(() => setCanvasReady(true), 50);
-              }}
-            />
-          </div>
-
-          {/* Drawing canvas overlay - only when markup enabled */}
-          {markupEnabled && imageDimensions && containerDimensions && canvasReady && !isOnBreak && (
+      <div className="flex-1 relative flex flex-col min-h-0 overflow-hidden">
+        {isSplitScreen ? (
+          <div className="flex-1 flex min-h-0 w-full">
             <div
-              className="absolute pointer-events-auto"
+              className={`flex-1 flex min-w-0 min-h-0 ${splitSidesSwapped ? "order-3" : "order-1"}`}
+            >
+              <div
+                ref={handleContainerRef}
+                className="flex-1 relative overflow-auto flex items-center justify-center min-h-0"
+              >
+                <div
+                  role="presentation"
+                  onClick={() => setActiveCanvas("curator")}
+                  className={`relative transition-all duration-200 min-w-0 min-h-0 rounded-md ${
+                    activeCanvas === "curator"
+                      ? "ring-2 ring-blue-500 ring-offset-2 ring-offset-dark-bg"
+                      : "border border-dark-accent/40"
+                  }`}
+                  style={{
+                    width: `${imageZoom}%`,
+                    height: `${imageZoom}%`,
+                  }}
+                >
+                  <span className="absolute top-2 left-2 z-10 pointer-events-none rounded bg-dark-bg/85 px-2 py-0.5 text-xs font-medium text-dark-muted border border-dark-accent/40">
+                    Image
+                  </span>
+                  <div className="absolute inset-0 flex items-center justify-center">
+                    <ImageViewer
+                      imagePath={currentImage}
+                      prefetchSources={prefetchSources}
+                      onDimensionsChange={(width, height) => {
+                        setImageDimensions({ width, height });
+                        setTimeout(() => setCanvasReady(true), 50);
+                      }}
+                    />
+                  </div>
+                  {imageDimensions &&
+                    containerDimensions &&
+                    canvasReady &&
+                    currentImage &&
+                    !isOnBreak && (
+                      <>
+                        <div
+                          className={`absolute z-[1] ${
+                            activeCanvas === "curator"
+                              ? "pointer-events-auto"
+                              : "pointer-events-none"
+                          }`}
+                          style={{
+                            left: "50%",
+                            top: "50%",
+                            transform: "translate(-50%, -50%)",
+                            width: imageDimensions.width,
+                            height: imageDimensions.height,
+                          }}
+                        >
+                          <GuidelineOverlay
+                            width={imageDimensions.width}
+                            height={imageDimensions.height}
+                            guidelines={
+                              imageGuidelines[currentImage] ?? {
+                                vertical: [],
+                                horizontal: [],
+                              }
+                            }
+                            onAddGuideline={(type, pos) =>
+                              addGuideline(currentImage, type, pos)
+                            }
+                            onUpdateGuideline={(type, index, pos) =>
+                              updateGuidelinePosition(currentImage, type, index, pos)
+                            }
+                            onRemoveGuideline={(type, index) =>
+                              removeGuideline(currentImage, type, index)
+                            }
+                          />
+                        </div>
+                        {markupEnabled && (
+                          <div
+                            className={`absolute z-[2] ${
+                              activeCanvas === "curator"
+                                ? "pointer-events-auto"
+                                : "pointer-events-none"
+                            }`}
+                            style={{
+                              left: "50%",
+                              top: "50%",
+                              transform: "translate(-50%, -50%)",
+                              width: imageDimensions.width,
+                              height: imageDimensions.height,
+                            }}
+                          >
+                            <Suspense fallback={null}>
+                              <DrawingCanvas
+                                width={imageDimensions.width}
+                                height={imageDimensions.height}
+                                isActive={activeCanvas === "curator"}
+                              />
+                            </Suspense>
+                          </div>
+                        )}
+                      </>
+                    )}
+                  {isCompareMode &&
+                    currentImage &&
+                    imageDimensions &&
+                    canvasReady &&
+                    !isOnBreak &&
+                    (freeDrawDrawings[currentImage]?.lines.length ?? 0) > 0 && (
+                      <div
+                        className="absolute pointer-events-none z-[8]"
+                        style={{
+                          left: "50%",
+                          top: "50%",
+                          transform: "translate(-50%, -50%)",
+                          width: imageDimensions.width,
+                          height: imageDimensions.height,
+                          opacity: compareOverlayOpacity / 100,
+                        }}
+                      >
+                        <DrawingDataOverlay
+                          width={imageDimensions.width}
+                          height={imageDimensions.height}
+                          drawingData={freeDrawDrawings[currentImage]!}
+                        />
+                      </div>
+                    )}
+                </div>
+              </div>
+            </div>
+
+            <div
+              className="w-1 shrink-0 bg-dark-accent self-stretch order-2"
+              role="separator"
+              aria-orientation="vertical"
+            />
+
+            <div
+              className={`flex-1 flex min-w-0 min-h-0 ${splitSidesSwapped ? "order-1" : "order-3"}`}
+            >
+              <div className="flex-1 relative overflow-auto flex items-center justify-center min-h-0">
+                <div
+                  className="relative transition-all duration-200 min-w-0 min-h-0 flex items-center justify-center"
+                  style={{
+                    width: `${imageZoom}%`,
+                    height: `${imageZoom}%`,
+                  }}
+                >
+                  {imageDimensions && canvasReady && !isOnBreak && (
+                    <div className="relative" style={{ width: imageDimensions.width, height: imageDimensions.height }}>
+                      <span className="absolute top-2 left-2 z-10 pointer-events-none rounded bg-dark-bg/85 px-2 py-0.5 text-xs font-medium text-dark-muted border border-dark-accent/40">
+                        Practice
+                      </span>
+                      {markupEnabled && (
+                        <Suspense fallback={null}>
+                          <FreeDrawCanvas
+                            width={imageDimensions.width}
+                            height={imageDimensions.height}
+                            isActive={activeCanvas === "freeDraw"}
+                            onActivate={() => setActiveCanvas("freeDraw")}
+                          />
+                        </Suspense>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div
+            ref={handleContainerRef}
+            className="flex-1 relative overflow-auto flex items-center justify-center min-h-0"
+          >
+            <div
+              className="relative transition-all duration-200 min-w-0 min-h-0"
               style={{
-                left: '50%',
-                top: '50%',
-                transform: 'translate(-50%, -50%)',
-                width: imageDimensions.width,
-                height: imageDimensions.height,
+                width: `${imageZoom}%`,
+                height: `${imageZoom}%`,
               }}
             >
-              <Suspense fallback={null}>
-                <DrawingCanvas
-                  width={imageDimensions.width}
-                  height={imageDimensions.height}
+              <div className="absolute inset-0 flex items-center justify-center">
+                <ImageViewer
+                  imagePath={currentImage}
+                  prefetchSources={prefetchSources}
+                  onDimensionsChange={(width, height) => {
+                    setImageDimensions({ width, height });
+                    setTimeout(() => setCanvasReady(true), 50);
+                  }}
                 />
-              </Suspense>
+              </div>
+
+              {imageDimensions &&
+                containerDimensions &&
+                canvasReady &&
+                currentImage &&
+                !isOnBreak && (
+                  <>
+                    <div
+                      className="absolute z-[1] pointer-events-auto"
+                      style={{
+                        left: "50%",
+                        top: "50%",
+                        transform: "translate(-50%, -50%)",
+                        width: imageDimensions.width,
+                        height: imageDimensions.height,
+                      }}
+                    >
+                      <GuidelineOverlay
+                        width={imageDimensions.width}
+                        height={imageDimensions.height}
+                        guidelines={
+                          imageGuidelines[currentImage] ?? {
+                            vertical: [],
+                            horizontal: [],
+                          }
+                        }
+                        onAddGuideline={(type, pos) =>
+                          addGuideline(currentImage, type, pos)
+                        }
+                        onUpdateGuideline={(type, index, pos) =>
+                          updateGuidelinePosition(currentImage, type, index, pos)
+                        }
+                        onRemoveGuideline={(type, index) =>
+                          removeGuideline(currentImage, type, index)
+                        }
+                      />
+                    </div>
+                    {markupEnabled && (
+                      <div
+                        className="absolute z-[2] pointer-events-auto"
+                        style={{
+                          left: "50%",
+                          top: "50%",
+                          transform: "translate(-50%, -50%)",
+                          width: imageDimensions.width,
+                          height: imageDimensions.height,
+                        }}
+                      >
+                        <Suspense fallback={null}>
+                          <DrawingCanvas
+                            width={imageDimensions.width}
+                            height={imageDimensions.height}
+                          />
+                        </Suspense>
+                      </div>
+                    )}
+                  </>
+                )}
             </div>
-          )}
-        </div>
+          </div>
+        )}
 
         {/* Break overlay - only in timed mode */}
         {isTimedMode && isOnBreak && (
@@ -391,18 +705,22 @@ export default function SessionView() {
       )}
 
       {/* Keyboard shortcuts hint */}
-      <div className="absolute bottom-16 left-4 text-dark-muted text-xs opacity-50">
+      <div className="absolute bottom-16 left-4 text-dark-muted text-xs opacity-50 max-w-xl">
         {isTimedMode ? (
           <>
             <span className="mr-3">Space: Pause</span>
             <span className="mr-3">← →: Navigate</span>
-            <span className="mr-3">X: Skip</span>
+            <span className="mr-3">{isSplitScreen ? "X: Swap sides" : "X: Skip"}</span>
           </>
         ) : (
           <>
             <span className="mr-3">→ or Space: Next</span>
             <span className="mr-3">←: Back</span>
+            <span className="mr-3">{isSplitScreen ? "X: Swap sides" : "X: Skip"}</span>
           </>
+        )}
+        {isSplitScreen && (
+          <span className="mr-3">S: Split · Tab: Pane · C: Compare</span>
         )}
         <span>Esc: End</span>
       </div>

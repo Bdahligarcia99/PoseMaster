@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { useSessionStore } from "../store/sessionStore";
+import { useSessionStore, getFreeDrawGuidelinesKey } from "../store/sessionStore";
+import GuidelineOverlay from "./GuidelineOverlay";
 
 export default function SessionGallery() {
   const {
@@ -13,6 +14,9 @@ export default function SessionGallery() {
     isBrowsingGallery,
     exitGallery,
     exitBrowseMode,
+    imageGuidelines,
+    freeDrawDrawings,
+    isSplitScreen,
   } = useSessionStore();
 
   // Go back to session summary (for completed sessions)
@@ -47,6 +51,17 @@ export default function SessionGallery() {
   const hasDrawings = currentImage?.hasMarkup || false;
   const hasAnyDrawings = viewedImages.some((img) => img.hasMarkup);
   const drawingData = currentImage?.drawingData;
+  const freeDrawingData =
+    currentImage &&
+    (() => {
+      const d =
+        freeDrawDrawings[currentImage.path] ??
+        currentImage.freeDrawData ??
+        null;
+      return d && d.lines.length > 0 ? d : null;
+    })();
+
+  const emptyGuidelines = { vertical: [] as number[], horizontal: [] as number[] };
 
   // Update image dimensions when image loads or window resizes
   const updateImageDimensions = useCallback(() => {
@@ -282,11 +297,41 @@ export default function SessionGallery() {
                 style={{ opacity: imageOpacity / 100 }}
                 onLoad={handleImageLoad}
               />
-              
-              {/* Drawing overlay - positioned exactly over the image with proper scaling */}
-              {showDrawings && hasDrawings && drawingData && imageDimensions.width > 0 && (
+
+              {currentImage && imageDimensions.width > 0 && (
+                <>
+                  <div className="absolute top-0 left-0 z-[1] pointer-events-none rounded-lg overflow-hidden">
+                    <GuidelineOverlay
+                      width={imageDimensions.width}
+                      height={imageDimensions.height}
+                      guidelines={imageGuidelines[currentImage.path] ?? emptyGuidelines}
+                      onAddGuideline={() => {}}
+                      onUpdateGuideline={() => {}}
+                      onRemoveGuideline={() => {}}
+                    />
+                  </div>
+                  {isSplitScreen && (
+                    <div className="absolute top-0 left-0 z-[3] pointer-events-none rounded-lg overflow-hidden">
+                      <GuidelineOverlay
+                        width={imageDimensions.width}
+                        height={imageDimensions.height}
+                        guidelines={
+                          imageGuidelines[getFreeDrawGuidelinesKey(currentImage.path)] ??
+                          emptyGuidelines
+                        }
+                        onAddGuideline={() => {}}
+                        onUpdateGuideline={() => {}}
+                        onRemoveGuideline={() => {}}
+                      />
+                    </div>
+                  )}
+                </>
+              )}
+
+              {/* Curator / single-pane drawing overlay */}
+              {showDrawings && drawingData && imageDimensions.width > 0 && (
                 <svg
-                  className="absolute top-0 left-0 pointer-events-none rounded-lg transition-opacity duration-200"
+                  className="absolute top-0 left-0 z-[2] pointer-events-none rounded-lg transition-opacity duration-200"
                   width={imageDimensions.width}
                   height={imageDimensions.height}
                   viewBox={`0 0 ${drawingData.canvasWidth || imageDimensions.width} ${drawingData.canvasHeight || imageDimensions.height}`}
@@ -295,6 +340,36 @@ export default function SessionGallery() {
                   {drawingData.lines.map((line, i) => (
                     <polyline
                       key={i}
+                      points={line.points
+                        .reduce((acc: string[], _point, idx) => {
+                          if (idx % 2 === 0 && idx + 1 < line.points.length) {
+                            acc.push(`${line.points[idx]},${line.points[idx + 1]}`);
+                          }
+                          return acc;
+                        }, [])
+                        .join(" ")}
+                      fill="none"
+                      stroke={line.tool === "eraser" ? "transparent" : line.color}
+                      strokeWidth={line.strokeWidth}
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  ))}
+                </svg>
+              )}
+
+              {/* Practice pane strokes (split sessions) */}
+              {showDrawings && freeDrawingData && imageDimensions.width > 0 && (
+                <svg
+                  className="absolute top-0 left-0 z-[4] pointer-events-none rounded-lg transition-opacity duration-200"
+                  width={imageDimensions.width}
+                  height={imageDimensions.height}
+                  viewBox={`0 0 ${freeDrawingData.canvasWidth || imageDimensions.width} ${freeDrawingData.canvasHeight || imageDimensions.height}`}
+                  preserveAspectRatio="none"
+                >
+                  {freeDrawingData.lines.map((line, i) => (
+                    <polyline
+                      key={`free-${i}`}
                       points={line.points
                         .reduce((acc: string[], _point, idx) => {
                           if (idx % 2 === 0 && idx + 1 < line.points.length) {

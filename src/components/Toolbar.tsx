@@ -62,10 +62,35 @@ const BrushIcons: Record<BrushType, JSX.Element> = {
 // Drawing tools (excluding eraser which is separate)
 const DRAWING_TOOLS: BrushType[] = ["pen", "ballpoint", "pencil", "brush", "highlighter"];
 
+/**
+ * Shared toolbar: brush/color/stroke live in drawingStore and apply to whichever pane is active.
+ * In split screen, undo/clear and stroke targets follow sessionStore.activeCanvas; only the
+ * active DrawingCanvas accepts pointer input (inactive pane uses pointer-events-none).
+ */
 export default function Toolbar() {
-  const { tool, color, strokeWidth, setTool, setColor, setStrokeWidth, undo, redo, clearHistory } =
-    useDrawingStore();
-  const { clearCurrentDrawing, updateCurrentDrawing, currentDrawingData, eraserDisabled } = useSessionStore();
+  const {
+    tool,
+    color,
+    strokeWidth,
+    setTool,
+    setColor,
+    setStrokeWidth,
+    undo,
+    redo,
+    undoFree,
+    redoFree,
+    clearHistory,
+    clearFreeHistory,
+  } = useDrawingStore();
+  const {
+    clearCurrentDrawing,
+    updateCurrentDrawing,
+    updateFreeDrawDrawing,
+    currentDrawingData,
+    eraserDisabled,
+    activeCanvas,
+    isSplitScreen,
+  } = useSessionStore();
   const { settings, addCustomColor, removeCustomColor, resetCustomColors } = useSettingsStore();
   
   const [showColorMenu, setShowColorMenu] = useState(false);
@@ -102,6 +127,19 @@ export default function Toolbar() {
   const isCustomColor = !PRESET_COLORS.includes(color) && !customColors.includes(color.toLowerCase());
 
   const handleUndo = () => {
+    if (isSplitScreen && activeCanvas === "freeDraw") {
+      const s = useSessionStore.getState();
+      const path = s.isSessionActive
+        ? s.images[s.currentImageIndex]?.path
+        : s.setupPreviewImagePath;
+      if (!path) return;
+      const lines = undoFree();
+      if (lines !== null) {
+        const prev = s.freeDrawDrawings[path] ?? { lines: [] };
+        updateFreeDrawDrawing(path, { ...prev, lines });
+      }
+      return;
+    }
     const lines = undo();
     if (lines !== null) {
       updateCurrentDrawing({ lines });
@@ -109,6 +147,19 @@ export default function Toolbar() {
   };
 
   const handleRedo = () => {
+    if (isSplitScreen && activeCanvas === "freeDraw") {
+      const s = useSessionStore.getState();
+      const path = s.isSessionActive
+        ? s.images[s.currentImageIndex]?.path
+        : s.setupPreviewImagePath;
+      if (!path) return;
+      const lines = redoFree();
+      if (lines !== null) {
+        const prev = s.freeDrawDrawings[path] ?? { lines: [] };
+        updateFreeDrawDrawing(path, { ...prev, lines });
+      }
+      return;
+    }
     const lines = redo();
     if (lines !== null) {
       updateCurrentDrawing({ lines });
@@ -117,11 +168,23 @@ export default function Toolbar() {
 
   const handleClear = () => {
     clearCurrentDrawing();
-    clearHistory();
+    if (isSplitScreen && activeCanvas === "freeDraw") {
+      clearFreeHistory();
+    } else {
+      clearHistory();
+    }
   };
 
   return (
     <div className="flex items-center justify-center gap-4 px-4 py-3 bg-dark-surface overflow-x-auto">
+      {isSplitScreen && (
+        <span
+          className="shrink-0 rounded-md border border-dark-accent/60 bg-dark-bg px-2 py-1 text-[11px] font-medium text-dark-muted"
+          title="Tools apply to this pane — click a canvas to switch"
+        >
+          {activeCanvas === "curator" ? "Image" : "Practice"}
+        </span>
+      )}
       {/* Brush selection */}
       <div className="flex items-center gap-1">
         {DRAWING_TOOLS.map((brushType) => (

@@ -136,16 +136,16 @@ export default function ExportOptionsModal({
           ctx.drawImage(img, 0, 0, width, height);
           ctx.globalAlpha = 1;
 
-          // Draw the markup if present
-          if (viewedImage.drawingData && viewedImage.drawingData.lines.length > 0) {
-            const scaleX = width / (viewedImage.drawingData.canvasWidth || img.width);
-            const scaleY = height / (viewedImage.drawingData.canvasHeight || img.height);
+          const drawMarkupLayer = (layer: typeof viewedImage.drawingData) => {
+            if (!layer || !layer.lines.length) return;
+            const scaleX = width / (layer.canvasWidth || img.width);
+            const scaleY = height / (layer.canvasHeight || img.height);
 
-            for (const line of viewedImage.drawingData.lines) {
+            for (const line of layer.lines) {
               if (line.points.length < 4) continue;
 
               const brushConfig = BRUSH_CONFIGS[line.tool as BrushType] || BRUSH_CONFIGS.pen;
-              
+
               ctx.beginPath();
               ctx.strokeStyle = line.tool === "eraser" ? "rgba(0,0,0,0)" : line.color;
               ctx.lineWidth = line.strokeWidth * Math.min(scaleX, scaleY);
@@ -167,7 +167,10 @@ export default function ExportOptionsModal({
               ctx.globalCompositeOperation = "source-over";
               ctx.globalAlpha = 1;
             }
-          }
+          };
+
+          drawMarkupLayer(viewedImage.drawingData);
+          drawMarkupLayer(viewedImage.freeDrawData ?? null);
 
           resolve(canvas);
         };

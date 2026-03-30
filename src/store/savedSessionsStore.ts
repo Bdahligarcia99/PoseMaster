@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { appDataDir } from "@tauri-apps/api/path";
 import { mkdir, writeTextFile, readTextFile, exists, readDir, remove } from "@tauri-apps/plugin-fs";
-import { DrawingData } from "./sessionStore";
+import { DrawingData, ImageGuidelinesData } from "./sessionStore";
 
 // Drawing data for a specific image
 export interface ImageDrawing {
@@ -36,6 +36,13 @@ export interface SavedSession {
   // Images practiced (excludes skipped). Drawings only for images with markup.
   imageOrder: string[];
   drawings: Record<string, ImageDrawing>;
+
+  /** Split session: curator pane strokes keyed by persistence path (same as imageOrder strings). */
+  curatorDrawings?: Record<string, DrawingData>;
+  freeDrawDrawings?: Record<string, DrawingData>;
+  imageGuidelines?: Record<string, ImageGuidelinesData>;
+  isSplitScreen?: boolean;
+  splitSidesSwapped?: boolean;
 }
 
 interface SavedSessionsState {

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useSessionStore, ViewedImage } from "../store/sessionStore";
 import { useSavedSessionsStore, ImageDrawing } from "../store/savedSessionsStore";
@@ -12,6 +12,7 @@ interface ThumbnailProps {
 }
 
 function Thumbnail({ viewedImage, isSelected, onToggleSelect }: ThumbnailProps) {
+  const freeFromStore = useSessionStore((s) => s.freeDrawDrawings[viewedImage.path]);
   const [thumbnailData, setThumbnailData] = useState<string | null>(null);
   const [imageDimensions, setImageDimensions] = useState({ width: 0, height: 0 });
   const imageRef = useRef<HTMLImageElement>(null);
@@ -41,6 +42,9 @@ function Thumbnail({ viewedImage, isSelected, onToggleSelect }: ThumbnailProps) 
 
   const fileName = viewedImage.path.split("/").pop() || viewedImage.path.split("\\").pop() || "Unknown";
   const drawingData = viewedImage.drawingData;
+  const freeDrawData =
+    viewedImage.freeDrawData ??
+    (freeFromStore && freeFromStore.lines.length > 0 ? freeFromStore : null);
 
   return (
     <div
@@ -60,10 +64,10 @@ function Thumbnail({ viewedImage, isSelected, onToggleSelect }: ThumbnailProps) 
               className="w-full h-full object-cover"
               onLoad={handleImageLoad}
             />
-            {/* Drawing overlay */}
+            {/* Drawing overlays (curator + practice in split) */}
             {viewedImage.hasMarkup && drawingData && imageDimensions.width > 0 && (
               <svg
-                className="absolute inset-0 pointer-events-none"
+                className="absolute inset-0 pointer-events-none z-[1]"
                 width={imageDimensions.width}
                 height={imageDimensions.height}
                 viewBox={`0 0 ${drawingData.canvasWidth || imageDimensions.width} ${drawingData.canvasHeight || imageDimensions.height}`}
@@ -72,6 +76,34 @@ function Thumbnail({ viewedImage, isSelected, onToggleSelect }: ThumbnailProps) 
                 {drawingData.lines.map((line, i) => (
                   <polyline
                     key={i}
+                    points={line.points
+                      .reduce((acc: string[], _point, idx) => {
+                        if (idx % 2 === 0 && idx + 1 < line.points.length) {
+                          acc.push(`${line.points[idx]},${line.points[idx + 1]}`);
+                        }
+                        return acc;
+                      }, [])
+                      .join(" ")}
+                    fill="none"
+                    stroke={line.tool === "eraser" ? "transparent" : line.color}
+                    strokeWidth={line.strokeWidth}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                ))}
+              </svg>
+            )}
+            {freeDrawData && freeDrawData.lines.length > 0 && imageDimensions.width > 0 && (
+              <svg
+                className="absolute inset-0 pointer-events-none z-[2]"
+                width={imageDimensions.width}
+                height={imageDimensions.height}
+                viewBox={`0 0 ${freeDrawData.canvasWidth || imageDimensions.width} ${freeDrawData.canvasHeight || imageDimensions.height}`}
+                preserveAspectRatio="xMidYMid slice"
+              >
+                {freeDrawData.lines.map((line, i) => (
+                  <polyline
+                    key={`f-${i}`}
                     points={line.points
                       .reduce((acc: string[], _point, idx) => {
                         if (idx % 2 === 0 && idx + 1 < line.points.length) {
@@ -154,8 +186,20 @@ export default function SessionSummary() {
     markupEnabled,
     setGalleryIndex,
     getPersistencePath,
+    freeDrawDrawings,
   } = useSessionStore();
   const { saveSession } = useSavedSessionsStore();
+
+  const viewedImagesForExport = useMemo(
+    () =>
+      viewedImages.map((v) => ({
+        ...v,
+        freeDrawData:
+          v.freeDrawData ??
+          (freeDrawDrawings[v.path]?.lines.length ? freeDrawDrawings[v.path] : null),
+      })),
+    [viewedImages, freeDrawDrawings]
+  );
   
   const [selectedImages, setSelectedImages] = useState<Set<string>>(new Set());
   const [showSaveModal, setShowSaveModal] = useState(false);
@@ -220,6 +264,8 @@ export default function SessionSummary() {
       return out;
     })();
 
+    const splitSnap = useSessionStore.getState().getSplitPersistSnapshot();
+
     await saveSession({
       name,
       folderPath: folderPath || (folderPaths.length > 0 ? folderPaths[0] : ""),
@@ -235,6 +281,11 @@ export default function SessionSummary() {
       },
       imageOrder,
       drawings,
+      curatorDrawings: splitSnap.curatorDrawings,
+      freeDrawDrawings: splitSnap.freeDrawDrawings,
+      imageGuidelines: splitSnap.imageGuidelines,
+      isSplitScreen: splitSnap.isSplitScreen,
+      splitSidesSwapped: splitSnap.splitSidesSwapped,
     });
 
     setSessionSaved(true);
@@ -261,7 +312,7 @@ export default function SessionSummary() {
       <ExportOptionsModal
         isOpen={showExportModal}
         onClose={() => setShowExportModal(false)}
-        viewedImages={viewedImages}
+        viewedImages={viewedImagesForExport}
         selectedImages={selectedImages}
         imageOpacity={imageOpacity}
         folderPath={folderPath}

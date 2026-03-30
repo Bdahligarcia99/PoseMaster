@@ -13,6 +13,19 @@ export function getPersistencePath(img: SessionImage): string {
   return img.originalUrl ?? img.path;
 }
 
+export type ActiveSplitCanvas = "curator" | "freeDraw";
+
+/** Per-image guide lines: X in image/canvas space for verticals, Y for horizontals. */
+export interface ImageGuidelinesData {
+  vertical: number[];
+  horizontal: number[];
+}
+
+/** Store key for Practice-pane guidelines in split mode (distinct from curator guides). */
+export function getFreeDrawGuidelinesKey(imagePath: string): string {
+  return `${imagePath}-freeDraw`;
+}
+
 export interface DrawingData {
   lines: Array<{
     points: number[];
@@ -29,6 +42,8 @@ export interface ViewedImage {
   path: string;
   viewedAt: number;
   drawingData: DrawingData | null;
+  /** Practice-pane strokes in split mode (saved / gallery). */
+  freeDrawData?: DrawingData | null;
   hasMarkup: boolean;
 }
 
@@ -44,6 +59,11 @@ export interface ViewSessionData {
     breakDuration: number;
     imageOpacity: number;
   };
+  curatorDrawings?: Record<string, DrawingData>;
+  freeDrawDrawings?: Record<string, DrawingData>;
+  imageGuidelines?: Record<string, ImageGuidelinesData>;
+  isSplitScreen?: boolean;
+  splitSidesSwapped?: boolean;
 }
 
 interface SessionState {
@@ -90,10 +110,29 @@ interface SessionState {
   
   // Display settings
   timerHidden: boolean; // Hide timer during session
-  
+
+  // Split screen (Image Curator + Free Draw)
+  isSplitScreen: boolean;
+  activeCanvas: ActiveSplitCanvas;
+  splitSidesSwapped: boolean;
+  /** Path of the random setup preview image (for split-layer clear / save). */
+  setupPreviewImagePath: string | null;
+  /** Overlay Practice strokes on Image Curator (split screen compare). */
+  isCompareMode: boolean;
+  /** Compare overlay visibility 10–100 (%). */
+  compareOverlayOpacity: number;
+
   // Drawing state for current image
   currentDrawingData: DrawingData;
-  
+
+  /** Split mode: curator layer per image path */
+  curatorDrawings: Record<string, DrawingData>;
+  /** Split mode: free-draw layer per image path */
+  freeDrawDrawings: Record<string, DrawingData>;
+
+  /** Alignment guides per reference image path */
+  imageGuidelines: Record<string, ImageGuidelinesData>;
+
   // Per-image undo history (keyed by image path)
   imageHistories: Record<string, HistoryState>;
   
@@ -134,10 +173,47 @@ interface SessionState {
   setEraserDisabled: (disabled: boolean) => void;
   setTimerHidden: (hidden: boolean) => void;
   toggleTimerPause: () => void;
-  
+
+  toggleSplitScreen: () => void;
+  setActiveCanvas: (canvas: ActiveSplitCanvas) => void;
+  swapSplitSides: () => void;
+  toggleCompareMode: () => void;
+  setCompareOverlayOpacity: (opacity: number) => void;
+
   updateCurrentDrawing: (data: DrawingData) => void;
+  updateCuratorDrawing: (imagePath: string, data: DrawingData) => void;
+  updateFreeDrawDrawing: (imagePath: string, data: DrawingData) => void;
+  getCuratorDrawing: (imagePath: string) => DrawingData | null;
+  getFreeDrawDrawing: (imagePath: string) => DrawingData | null;
   saveCurrentImageDrawing: () => void;
-  
+
+  addGuideline: (
+    imagePath: string,
+    type: "vertical" | "horizontal",
+    position: number
+  ) => void;
+  removeGuideline: (
+    imagePath: string,
+    type: "vertical" | "horizontal",
+    index: number
+  ) => void;
+  updateGuidelinePosition: (
+    imagePath: string,
+    type: "vertical" | "horizontal",
+    index: number,
+    newPosition: number
+  ) => void;
+  clearGuidelines: (imagePath: string) => void;
+
+  /** Snapshot for persisting split layers + guides (keys use persistence paths). */
+  getSplitPersistSnapshot: () => {
+    curatorDrawings: Record<string, DrawingData>;
+    freeDrawDrawings: Record<string, DrawingData>;
+    imageGuidelines: Record<string, ImageGuidelinesData>;
+    isSplitScreen: boolean;
+    splitSidesSwapped: boolean;
+  };
+
   // Per-image history management
   saveImageHistory: (imagePath: string, historyState: HistoryState) => void;
   getImageHistory: (imagePath: string) => HistoryState | null;
@@ -155,6 +231,32 @@ function shuffleArray<T>(array: T[]): T[] {
 }
 
 const initialDrawingData: DrawingData = { lines: [] };
+
+function cloneDrawingData(data: DrawingData): DrawingData {
+  return {
+    ...data,
+    lines: data.lines.map((line) => ({
+      ...line,
+      points: [...line.points],
+    })),
+  };
+}
+
+function emptyImageGuidelines(): ImageGuidelinesData {
+  return { vertical: [], horizontal: [] };
+}
+
+/** Curator overlay + free layer both count as markup in split mode. */
+function hasSplitMarkup(
+  state: SessionState,
+  imagePath: string,
+  curatorSnapshot: DrawingData
+): boolean {
+  const curatorLines = curatorSnapshot.lines.length;
+  if (curatorLines > 0) return true;
+  const free = state.freeDrawDrawings[imagePath];
+  return Boolean(free && free.lines.length > 0);
+}
 
 export const useSessionStore = create<SessionState>((set, get) => ({
   // Initial state
@@ -186,9 +288,18 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   markupEnabled: true, // default drawing enabled
   eraserDisabled: false, // default eraser enabled
   timerHidden: false, // default timer visible
+  isSplitScreen: false,
+  activeCanvas: "curator",
+  splitSidesSwapped: false,
+  setupPreviewImagePath: null,
+  isCompareMode: false,
+  compareOverlayOpacity: 70,
   isTimerPaused: false,
   isOnBreak: false,
   currentDrawingData: { ...initialDrawingData },
+  curatorDrawings: {},
+  freeDrawDrawings: {},
+  imageGuidelines: {},
   imageHistories: {},
 
   // Actions
@@ -215,7 +326,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   
   enterSetup: () => set({ isInSetup: true }),
   
-  exitSetup: () => set({ isInSetup: false }),
+  exitSetup: () =>
+    set({ isInSetup: false, setupPreviewImagePath: null, isCompareMode: false }),
   
   startSession: (options?: { excludePath?: string; includeFirstPath?: string }) => {
     const state = get();
@@ -243,7 +355,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     const preserveDrawing = includeFirstPath && state.currentDrawingData.lines.length > 0;
 
-    useDrawingStore.getState().clearHistory();
+    const drawingStore = useDrawingStore.getState();
+    drawingStore.clearHistory();
+    drawingStore.clearFreeHistory();
 
     set({
       images: sessionImages,
@@ -254,7 +368,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       viewedImages: preserveDrawing
         ? [
             {
-              path: includeFirstPath,
+              path: includeFirstPath as string,
               viewedAt: Date.now(),
               drawingData: state.currentDrawingData,
               hasMarkup: true,
@@ -263,6 +377,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         : [],
       currentImageIndex: 0,
       currentDrawingData: preserveDrawing ? state.currentDrawingData : { lines: [] },
+      curatorDrawings: {},
+      freeDrawDrawings: {},
+      imageGuidelines: {},
+      setupPreviewImagePath: null,
+      isCompareMode: false,
+      compareOverlayOpacity: 70,
       imageHistories: {},
       isTimerPaused: false,
       viewedSessionId: null,
@@ -271,15 +391,54 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
   
   viewSession: (data) => {
+    const legacy = data.drawings ?? {};
+    const loadedCurator = data.curatorDrawings ?? {};
+    const loadedFree = data.freeDrawDrawings ?? {};
+    const loadedGuidelines = data.imageGuidelines ?? {};
+
+    const curatorMerged: Record<string, DrawingData> = {};
+    const freeMerged: Record<string, DrawingData> = {};
+    for (const path of data.imageOrder) {
+      const cur = loadedCurator[path];
+      const leg = legacy[path];
+      if (cur && cur.lines.length > 0) {
+        curatorMerged[path] = cloneDrawingData(cur);
+      } else if (leg?.drawingData && leg.drawingData.lines.length > 0) {
+        curatorMerged[path] = cloneDrawingData(leg.drawingData);
+      }
+      const free = loadedFree[path];
+      if (free && free.lines.length > 0) {
+        freeMerged[path] = cloneDrawingData(free);
+      }
+    }
+
+    const guidelineClone: Record<string, ImageGuidelinesData> = {};
+    for (const [k, v] of Object.entries(loadedGuidelines)) {
+      guidelineClone[k] = {
+        vertical: [...v.vertical],
+        horizontal: [...v.horizontal],
+      };
+    }
+
     const viewedImages: ViewedImage[] = data.imageOrder.map((path) => {
-      const drawing = data.drawings?.[path];
+      const leg = legacy[path];
+      const curatorData = curatorMerged[path] ?? null;
+      const freeData = freeMerged[path] ?? null;
+      const hasMarkup = Boolean(
+        (curatorData && curatorData.lines.length > 0) ||
+          (freeData && freeData.lines.length > 0)
+      );
       return {
         path,
-        viewedAt: drawing?.savedAt || Date.now(),
-        drawingData: drawing?.drawingData || null,
-        hasMarkup: drawing ? drawing.drawingData.lines.length > 0 : false,
+        viewedAt: leg?.savedAt || Date.now(),
+        drawingData: curatorData,
+        freeDrawData: freeData,
+        hasMarkup,
       };
     });
+
+    const hasPracticeStrokes = Object.keys(freeMerged).length > 0;
+    const splitRestored = data.isSplitScreen ?? hasPracticeStrokes;
 
     const sessionImages: SessionImage[] = data.imageOrder.map((path) => ({
       path,
@@ -309,6 +468,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       breakDuration: data.settings.breakDuration,
       imageOpacity: data.settings.imageOpacity,
       maxImages: data.imageOrder.length,
+      isSplitScreen: splitRestored,
+      activeCanvas: "curator",
+      splitSidesSwapped: data.splitSidesSwapped ?? false,
+      curatorDrawings: curatorMerged,
+      freeDrawDrawings: freeMerged,
+      imageGuidelines: guidelineClone,
+      setupPreviewImagePath: null,
+      isCompareMode: false,
+      compareOverlayOpacity: 70,
     });
   },
   
@@ -317,7 +485,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     if (state.images.length > 0) {
       const currentImg = state.images[state.currentImageIndex];
       const currentImage = currentImg.path;
-      const hasMarkup = state.currentDrawingData.lines.length > 0;
+      const hasMarkup = state.isSplitScreen
+        ? hasSplitMarkup(state, currentImage, state.currentDrawingData)
+        : state.currentDrawingData.lines.length > 0;
       
       // Check if already in viewed images
       const existingIndex = state.viewedImages.findIndex(v => v.path === currentImage);
@@ -372,6 +542,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     isTimerPaused: false,
     viewedSessionId: null,
     viewedSessionName: null,
+    isSplitScreen: false,
+    activeCanvas: "curator",
+    splitSidesSwapped: false,
+    curatorDrawings: {},
+    freeDrawDrawings: {},
+    imageGuidelines: {},
+    setupPreviewImagePath: null,
+    isCompareMode: false,
+    compareOverlayOpacity: 70,
   }),
   
   // Gallery view actions
@@ -387,6 +566,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     viewedImages: [],
     viewedSessionId: null,
     viewedSessionName: null,
+    isSplitScreen: false,
+    activeCanvas: "curator",
+    splitSidesSwapped: false,
+    curatorDrawings: {},
+    freeDrawDrawings: {},
+    imageGuidelines: {},
+    setupPreviewImagePath: null,
+    isCompareMode: false,
+    compareOverlayOpacity: 70,
   }),
 
   enterBrowseMode: () => {
@@ -437,19 +625,28 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     const currentImg = state.images[state.currentImageIndex];
     const currentImage = currentImg.path;
-    const hasMarkup = state.currentDrawingData.lines.length > 0;
-    
-    // Save current image's undo history
+    const hasMarkup = state.isSplitScreen
+      ? hasSplitMarkup(state, currentImage, state.currentDrawingData)
+      : state.currentDrawingData.lines.length > 0;
+
+    let mergedCurator = state.curatorDrawings;
+    if (state.isSplitScreen) {
+      mergedCurator = {
+        ...state.curatorDrawings,
+        [currentImage]: cloneDrawingData(state.currentDrawingData),
+      };
+    }
+
     const drawingStore = useDrawingStore.getState();
     const currentHistory = drawingStore.getHistoryState();
     const updatedHistories = {
       ...state.imageHistories,
       [currentImage]: currentHistory,
     };
-    
-    const existingIndex = state.viewedImages.findIndex(v => v.path === currentImage);
+
+    const existingIndex = state.viewedImages.findIndex((v) => v.path === currentImage);
     let updatedViewed = [...state.viewedImages];
-    
+
     if (existingIndex >= 0) {
       updatedViewed[existingIndex] = {
         ...updatedViewed[existingIndex],
@@ -464,27 +661,36 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         hasMarkup,
       });
     }
-    
+
     const nextIndex = (state.currentImageIndex + 1) % state.images.length;
     const nextImg = state.images[nextIndex];
-    const nextImage = nextImg.path;
-    
-    // Check if next image was already viewed and has drawing data
-    const nextImageViewed = updatedViewed.find(v => v.path === nextImage);
-    
-    // Load next image's undo history (or clear if none)
-    const nextHistory = updatedHistories[nextImage];
+    const nextPath = nextImg.path;
+
+    const nextImageViewed = updatedViewed.find((v) => v.path === nextPath);
+
+    const loadNextCurator = (): DrawingData => {
+      if (state.isSplitScreen) {
+        const rec = mergedCurator[nextPath];
+        if (rec) return cloneDrawingData(rec);
+      }
+      if (nextImageViewed?.drawingData) return cloneDrawingData(nextImageViewed.drawingData);
+      return { lines: [] };
+    };
+
+    const nextHistory = updatedHistories[nextPath];
     if (nextHistory) {
       drawingStore.setHistoryState(nextHistory);
     } else {
       drawingStore.clearHistory();
     }
-    
+    drawingStore.clearFreeHistory();
+
     set({
       currentImageIndex: nextIndex,
       viewedImages: updatedViewed,
-      currentDrawingData: nextImageViewed?.drawingData || { lines: [] },
+      currentDrawingData: loadNextCurator(),
       imageHistories: updatedHistories,
+      curatorDrawings: mergedCurator,
     });
   },
   
@@ -500,27 +706,66 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       ...state.imageHistories,
       [currentImage]: currentHistory,
     };
-    
-    const prevIndex = state.currentImageIndex === 0
-      ? state.images.length - 1
-      : state.currentImageIndex - 1;
-    const prevImage = state.images[prevIndex].path;
 
-    // Check if prev image was already viewed and has drawing data
-    const prevImageViewed = state.viewedImages.find(v => v.path === prevImage);
-    
-    // Load prev image's undo history (or clear if none)
-    const prevHistory = updatedHistories[prevImage];
+    let mergedCurator = state.curatorDrawings;
+    if (state.isSplitScreen) {
+      mergedCurator = {
+        ...state.curatorDrawings,
+        [currentImage]: cloneDrawingData(state.currentDrawingData),
+      };
+    }
+
+    const hasMarkup = state.isSplitScreen
+      ? hasSplitMarkup(state, currentImage, state.currentDrawingData)
+      : state.currentDrawingData.lines.length > 0;
+
+    const existingIndex = state.viewedImages.findIndex((v) => v.path === currentImage);
+    let updatedViewed = [...state.viewedImages];
+
+    if (existingIndex >= 0) {
+      updatedViewed[existingIndex] = {
+        ...updatedViewed[existingIndex],
+        drawingData: hasMarkup ? state.currentDrawingData : updatedViewed[existingIndex].drawingData,
+        hasMarkup: hasMarkup || updatedViewed[existingIndex].hasMarkup,
+      };
+    } else {
+      updatedViewed.push({
+        path: currentImage,
+        viewedAt: Date.now(),
+        drawingData: hasMarkup ? state.currentDrawingData : null,
+        hasMarkup,
+      });
+    }
+
+    const prevIndex =
+      state.currentImageIndex === 0 ? state.images.length - 1 : state.currentImageIndex - 1;
+    const prevPath = state.images[prevIndex].path;
+
+    const prevImageViewed = updatedViewed.find((v) => v.path === prevPath);
+
+    const loadPrevCurator = (): DrawingData => {
+      if (state.isSplitScreen) {
+        const rec = mergedCurator[prevPath];
+        if (rec) return cloneDrawingData(rec);
+      }
+      if (prevImageViewed?.drawingData) return cloneDrawingData(prevImageViewed.drawingData);
+      return { lines: [] };
+    };
+
+    const prevHistory = updatedHistories[prevPath];
     if (prevHistory) {
       drawingStore.setHistoryState(prevHistory);
     } else {
       drawingStore.clearHistory();
     }
-    
+    drawingStore.clearFreeHistory();
+
     set({
       currentImageIndex: prevIndex,
-      currentDrawingData: prevImageViewed?.drawingData || { lines: [] },
+      viewedImages: updatedViewed,
+      currentDrawingData: loadPrevCurator(),
       imageHistories: updatedHistories,
+      curatorDrawings: mergedCurator,
     });
   },
   
@@ -542,6 +787,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const newHistories = { ...state.imageHistories };
     delete newHistories[currentImage];
 
+    const newCuratorDrawings = { ...state.curatorDrawings };
+    delete newCuratorDrawings[currentImage];
+    const newFreeDrawDrawings = { ...state.freeDrawDrawings };
+    delete newFreeDrawDrawings[currentImage];
+    const newImageGuidelines = { ...state.imageGuidelines };
+    delete newImageGuidelines[currentImage];
+    delete newImageGuidelines[getFreeDrawGuidelinesKey(currentImage)];
+
     let newIndex = state.currentImageIndex;
     if (newIndex >= newImages.length) {
       newIndex = newImages.length - 1;
@@ -551,6 +804,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const newCurrentImagePath = newCurrentImg.path;
     const newCurrentViewed = newViewedImages.find((v) => v.path === newCurrentImagePath);
 
+    const loadCuratorAfterSkip = (): DrawingData => {
+      if (state.isSplitScreen) {
+        const rec = newCuratorDrawings[newCurrentImagePath];
+        if (rec) return cloneDrawingData(rec);
+      }
+      if (newCurrentViewed?.drawingData) return cloneDrawingData(newCurrentViewed.drawingData);
+      return { lines: [] };
+    };
+
     const drawingStore = useDrawingStore.getState();
     const newHistory = newHistories[newCurrentImagePath];
     if (newHistory) {
@@ -558,14 +820,18 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     } else {
       drawingStore.clearHistory();
     }
-    
+    drawingStore.clearFreeHistory();
+
     set({
       images: newImages,
       allImages: newAllImages,
       viewedImages: newViewedImages,
       currentImageIndex: newIndex,
-      currentDrawingData: newCurrentViewed?.drawingData || { lines: [] },
+      currentDrawingData: loadCuratorAfterSkip(),
       imageHistories: newHistories,
+      curatorDrawings: newCuratorDrawings,
+      freeDrawDrawings: newFreeDrawDrawings,
+      imageGuidelines: newImageGuidelines,
     });
   },
   
@@ -586,15 +852,94 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   setTimerHidden: (hidden) => set({ timerHidden: hidden }),
   
   toggleTimerPause: () => set((state) => ({ isTimerPaused: !state.isTimerPaused })),
-  
-  updateCurrentDrawing: (data) => set({ currentDrawingData: data }),
-  
+
+  toggleSplitScreen: () =>
+    set((state) => {
+      const next = !state.isSplitScreen;
+      return {
+        isSplitScreen: next,
+        ...(!next ? { isCompareMode: false } : {}),
+      };
+    }),
+
+  setActiveCanvas: (canvas) => set({ activeCanvas: canvas }),
+
+  swapSplitSides: () => set((state) => ({ splitSidesSwapped: !state.splitSidesSwapped })),
+
+  toggleCompareMode: () =>
+    set((state) => ({
+      isCompareMode: state.isSplitScreen ? !state.isCompareMode : false,
+    })),
+
+  setCompareOverlayOpacity: (opacity) =>
+    set({
+      compareOverlayOpacity: Math.max(10, Math.min(100, opacity)),
+    }),
+
+  updateCurrentDrawing: (data) => {
+    const state = get();
+    if (!state.isSplitScreen) {
+      set({ currentDrawingData: data });
+      return;
+    }
+    if (
+      !state.isSessionActive &&
+      state.setupPreviewImagePath &&
+      state.activeCanvas === "curator"
+    ) {
+      const p = state.setupPreviewImagePath;
+      set({
+        currentDrawingData: data,
+        curatorDrawings: { ...state.curatorDrawings, [p]: data },
+      });
+      return;
+    }
+    const path = state.images[state.currentImageIndex]?.path;
+    if (!path) {
+      set({ currentDrawingData: data });
+      return;
+    }
+    if (state.activeCanvas === "freeDraw") {
+      set({
+        freeDrawDrawings: { ...state.freeDrawDrawings, [path]: data },
+      });
+      return;
+    }
+    set({
+      currentDrawingData: data,
+      curatorDrawings: { ...state.curatorDrawings, [path]: data },
+    });
+  },
+
+  updateCuratorDrawing: (imagePath, data) =>
+    set((state) => {
+      const curatorDrawings = { ...state.curatorDrawings, [imagePath]: data };
+      const curPath = state.images[state.currentImageIndex]?.path;
+      const syncCurrent =
+        state.isSessionActive && state.isSplitScreen && curPath === imagePath;
+      return {
+        curatorDrawings,
+        ...(syncCurrent ? { currentDrawingData: data } : {}),
+      };
+    }),
+
+  updateFreeDrawDrawing: (imagePath, data) =>
+    set((state) => ({
+      freeDrawDrawings: { ...state.freeDrawDrawings, [imagePath]: data },
+    })),
+
+  getCuratorDrawing: (imagePath) => get().curatorDrawings[imagePath] ?? null,
+
+  getFreeDrawDrawing: (imagePath) => get().freeDrawDrawings[imagePath] ?? null,
+
   saveCurrentImageDrawing: () => {
     const state = get();
     if (state.images.length === 0) return;
 
     const currentImage = state.images[state.currentImageIndex].path;
-    const hasMarkup = state.currentDrawingData.lines.length > 0;
+    const hasMarkup = state.isSplitScreen
+      ? hasSplitMarkup(state, currentImage, state.currentDrawingData)
+      : state.currentDrawingData.lines.length > 0;
     
     const existingIndex = state.viewedImages.findIndex(v => v.path === currentImage);
     let updatedViewed = [...state.viewedImages];
@@ -617,7 +962,41 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     set({ viewedImages: updatedViewed });
   },
   
-  clearCurrentDrawing: () => set({ currentDrawingData: { lines: [] } }),
+  clearCurrentDrawing: () => {
+    const state = get();
+    if (!state.isSplitScreen) {
+      set({ currentDrawingData: { lines: [] } });
+      return;
+    }
+    const sessionPath = state.images[state.currentImageIndex]?.path;
+    const path =
+      state.isSessionActive && sessionPath
+        ? sessionPath
+        : state.setupPreviewImagePath;
+    if (!path) {
+      set({ currentDrawingData: { lines: [] } });
+      return;
+    }
+    if (state.activeCanvas === "freeDraw") {
+      set((s) => {
+        const next = { ...s.freeDrawDrawings };
+        delete next[path];
+        return { freeDrawDrawings: next };
+      });
+      return;
+    }
+    set((s) => {
+      const nextCur = { ...s.curatorDrawings };
+      delete nextCur[path];
+      const clearLiveCurator =
+        (s.isSessionActive && s.images[s.currentImageIndex]?.path === path) ||
+        (!s.isSessionActive && s.setupPreviewImagePath === path);
+      return {
+        curatorDrawings: nextCur,
+        ...(clearLiveCurator ? { currentDrawingData: { lines: [] } } : {}),
+      };
+    });
+  },
   
   // Per-image history management helpers
   saveImageHistory: (imagePath, historyState) => {
@@ -632,5 +1011,127 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   getImageHistory: (imagePath) => {
     const state = get();
     return state.imageHistories[imagePath] || null;
+  },
+
+  addGuideline: (imagePath, type, position) =>
+    set((state) => {
+      const prev = state.imageGuidelines[imagePath] ?? emptyImageGuidelines();
+      const next: ImageGuidelinesData =
+        type === "vertical"
+          ? { ...prev, vertical: [...prev.vertical, position] }
+          : { ...prev, horizontal: [...prev.horizontal, position] };
+      return {
+        imageGuidelines: { ...state.imageGuidelines, [imagePath]: next },
+      };
+    }),
+
+  removeGuideline: (imagePath, type, index) =>
+    set((state) => {
+      const prev = state.imageGuidelines[imagePath];
+      if (!prev) return {};
+      const arr =
+        type === "vertical" ? [...prev.vertical] : [...prev.horizontal];
+      if (index < 0 || index >= arr.length) return {};
+      arr.splice(index, 1);
+      const next: ImageGuidelinesData =
+        type === "vertical"
+          ? { ...prev, vertical: arr }
+          : { ...prev, horizontal: arr };
+      const nextMap = { ...state.imageGuidelines };
+      if (next.vertical.length === 0 && next.horizontal.length === 0) {
+        delete nextMap[imagePath];
+      } else {
+        nextMap[imagePath] = next;
+      }
+      return { imageGuidelines: nextMap };
+    }),
+
+  updateGuidelinePosition: (imagePath, type, index, newPosition) =>
+    set((state) => {
+      const prev = state.imageGuidelines[imagePath];
+      if (!prev) return {};
+      const arr =
+        type === "vertical" ? [...prev.vertical] : [...prev.horizontal];
+      if (index < 0 || index >= arr.length) return {};
+      arr[index] = newPosition;
+      const next: ImageGuidelinesData =
+        type === "vertical"
+          ? { ...prev, vertical: arr }
+          : { ...prev, horizontal: arr };
+      return {
+        imageGuidelines: { ...state.imageGuidelines, [imagePath]: next },
+      };
+    }),
+
+  clearGuidelines: (imagePath) =>
+    set((state) => {
+      const next = { ...state.imageGuidelines };
+      delete next[imagePath];
+      return { imageGuidelines: next };
+    }),
+
+  getSplitPersistSnapshot: () => {
+    const state = get();
+    const toPersistKey = (displayPath: string) => {
+      const img = state.allImages.find((i) => i.path === displayPath);
+      return img ? getPersistencePath(img) : displayPath;
+    };
+
+    let curatorDisplay: Record<string, DrawingData> = {};
+    if (state.isSplitScreen) {
+      curatorDisplay = { ...state.curatorDrawings };
+      const cur = state.images[state.currentImageIndex];
+      if (cur) {
+        curatorDisplay[cur.path] = cloneDrawingData(state.currentDrawingData);
+      }
+      for (const v of state.viewedImages) {
+        if (
+          v.drawingData &&
+          v.drawingData.lines.length > 0 &&
+          !curatorDisplay[v.path]
+        ) {
+          curatorDisplay[v.path] = cloneDrawingData(v.drawingData);
+        }
+      }
+    }
+
+    const mapDrawings = (rec: Record<string, DrawingData>) => {
+      const out: Record<string, DrawingData> = {};
+      for (const [k, v] of Object.entries(rec)) {
+        if (!v.lines.length) continue;
+        out[toPersistKey(k)] = cloneDrawingData(v);
+      }
+      return out;
+    };
+
+    const freeSuffix = "-freeDraw";
+    const mapGuidelines = () => {
+      const out: Record<string, ImageGuidelinesData> = {};
+      for (const [key, data] of Object.entries(state.imageGuidelines)) {
+        if (!data.vertical.length && !data.horizontal.length) continue;
+        if (key.endsWith(freeSuffix) && !state.isSplitScreen) continue;
+        if (key.endsWith(freeSuffix)) {
+          const baseDisplay = key.slice(0, -freeSuffix.length);
+          out[`${toPersistKey(baseDisplay)}${freeSuffix}`] = {
+            vertical: [...data.vertical],
+            horizontal: [...data.horizontal],
+          };
+        } else {
+          out[toPersistKey(key)] = {
+            vertical: [...data.vertical],
+            horizontal: [...data.horizontal],
+          };
+        }
+      }
+      return out;
+    };
+
+    return {
+      curatorDrawings: mapDrawings(curatorDisplay),
+      freeDrawDrawings: state.isSplitScreen ? mapDrawings(state.freeDrawDrawings) : {},
+      imageGuidelines: mapGuidelines(),
+      isSplitScreen: state.isSplitScreen,
+      splitSidesSwapped: state.splitSidesSwapped,
+    };
   },
 }));

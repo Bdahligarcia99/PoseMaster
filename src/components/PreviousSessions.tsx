@@ -17,13 +17,29 @@ export default function PreviousSessions({ onBack, onView, embedded = false }: P
   // Convert saved session to ViewedImage array for export (handles sessions with/without drawings)
   const getViewedImagesFromSession = (session: SavedSession): ViewedImage[] => {
     const drawings = session.drawings || {};
+    const curator = session.curatorDrawings || {};
+    const free = session.freeDrawDrawings || {};
     return session.imageOrder.map((path) => {
       const drawing = drawings[path];
+      const cur = curator[path];
+      const fr = free[path];
+      const drawingData =
+        cur && cur.lines.length > 0
+          ? cur
+          : drawing?.drawingData && drawing.drawingData.lines.length > 0
+            ? drawing.drawingData
+            : null;
+      const freeDrawData = fr && fr.lines.length > 0 ? fr : null;
+      const hasMarkup = Boolean(
+        (drawingData && drawingData.lines.length > 0) ||
+          (freeDrawData && freeDrawData.lines.length > 0)
+      );
       return {
         path,
         viewedAt: drawing?.savedAt || session.createdAt,
-        drawingData: drawing?.drawingData || null,
-        hasMarkup: drawing ? drawing.drawingData.lines.length > 0 : false,
+        drawingData,
+        freeDrawData,
+        hasMarkup,
       };
     });
   };

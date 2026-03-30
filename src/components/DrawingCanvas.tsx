@@ -7,41 +7,92 @@ import Konva from "konva";
 interface DrawingCanvasProps {
   width: number;
   height: number;
+  /** When false (split screen inactive pane), canvas is visible but ignores input. Default true. */
+  isActive?: boolean;
+  /** Split mode: free-draw pane — uses `freeDrawDrawings[layerImagePath]`. */
+  splitDrawingRole?: "free";
+  /** Scope for free layer (required for setup preview); defaults to current session image path. */
+  layerImagePath?: string | null;
 }
 
-export default function DrawingCanvas({ width, height }: DrawingCanvasProps) {
+export default function DrawingCanvas({
+  width,
+  height,
+  isActive = true,
+  splitDrawingRole,
+  layerImagePath = null,
+}: DrawingCanvasProps) {
   const stageRef = useRef<Konva.Stage>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [isDrawing, setIsDrawing] = useState(false);
   const previousToolRef = useRef<BrushType | null>(null);
   const isUsingTabletEraserRef = useRef(false);
 
-  const { currentDrawingData, updateCurrentDrawing, eraserDisabled } = useSessionStore();
-  const { tool, color, strokeWidth, pushHistory, setTool } = useDrawingStore();
+  const isSplitScreen = useSessionStore((s) => s.isSplitScreen);
+  const images = useSessionStore((s) => s.images);
+  const currentImageIndex = useSessionStore((s) => s.currentImageIndex);
+  const currentDrawingData = useSessionStore((s) => s.currentDrawingData);
+  const freeDrawDrawings = useSessionStore((s) => s.freeDrawDrawings);
+  const updateCurrentDrawing = useSessionStore((s) => s.updateCurrentDrawing);
+  const updateFreeDrawDrawing = useSessionStore((s) => s.updateFreeDrawDrawing);
+  const setActiveCanvas = useSessionStore((s) => s.setActiveCanvas);
+  const eraserDisabled = useSessionStore((s) => s.eraserDisabled);
 
-  // Detect Wacom/tablet eraser end
+  const { tool, color, strokeWidth, pushHistory, pushFreeHistory, setTool } = useDrawingStore();
+
+  const sessionImagePath = images[currentImageIndex]?.path ?? "";
+  const pathForFree = layerImagePath ?? sessionImagePath;
+  const isFreePane =
+    Boolean(isSplitScreen && splitDrawingRole === "free" && pathForFree);
+
+  const drawingData: DrawingData = isFreePane
+    ? freeDrawDrawings[pathForFree] ?? { lines: [] }
+    : currentDrawingData;
+
+  useEffect(() => {
+    if (!isActive) setIsDrawing(false);
+  }, [isActive]);
+
+  const applyDrawingUpdate = useCallback(
+    (data: DrawingData) => {
+      if (isFreePane) {
+        updateFreeDrawDrawing(pathForFree, data);
+      } else {
+        updateCurrentDrawing(data);
+      }
+    },
+    [isFreePane, pathForFree, updateCurrentDrawing, updateFreeDrawDrawing]
+  );
+
+  useEffect(() => {
+    if (isFreePane) return;
+    const exportCanvas = () => {
+      const stage = stageRef.current;
+      if (!stage) return null;
+      return stage.toDataURL({ pixelRatio: 2 });
+    };
+    (window as unknown as { exportDrawingCanvas: () => string | null }).exportDrawingCanvas = exportCanvas;
+    return () => {
+      delete (window as unknown as { exportDrawingCanvas?: () => string | null }).exportDrawingCanvas;
+    };
+  }, [isFreePane, width, height]);
+
   useEffect(() => {
     const container = containerRef.current;
-    if (!container) return;
+    if (!container || !isActive) return;
 
     const handlePointerDown = (e: PointerEvent) => {
-      // Only handle pen input
       if (e.pointerType !== "pen") return;
 
-      // Check for eraser end of stylus
-      // Method 1: button === 5 is the eraser button on Wacom tablets
-      // Method 2: Some tablets report eraser through buttons bitmask (bit 5 = 32)
       const isEraserEnd = e.button === 5 || (e.buttons & 32) !== 0;
 
       if (isEraserEnd && !eraserDisabled) {
-        // Switching to eraser - save previous tool
         if (!isUsingTabletEraserRef.current && tool !== "eraser") {
           previousToolRef.current = tool;
           isUsingTabletEraserRef.current = true;
           setTool("eraser");
         }
       } else if (e.button === 0 && isUsingTabletEraserRef.current) {
-        // Switching back to pen tip - restore previous tool
         isUsingTabletEraserRef.current = false;
         if (previousToolRef.current) {
           setTool(previousToolRef.current);
@@ -50,21 +101,25 @@ export default function DrawingCanvas({ width, height }: DrawingCanvasProps) {
       }
     };
 
-    // Listen on the container element
     container.addEventListener("pointerdown", handlePointerDown);
 
     return () => {
       container.removeEventListener("pointerdown", handlePointerDown);
     };
-  }, [tool, setTool, eraserDisabled]);
+  }, [isActive, tool, setTool, eraserDisabled]);
 
-  // Get brush config for current tool
   const getBrushConfig = (brushType: BrushType) => {
     return BRUSH_CONFIGS[brushType] || BRUSH_CONFIGS.pen;
   };
 
+  const activateCanvasForRole = useCallback(() => {
+    if (!isSplitScreen) return;
+    setActiveCanvas(isFreePane ? "freeDraw" : "curator");
+  }, [isFreePane, isSplitScreen, setActiveCanvas]);
+
   const handleMouseDown = useCallback(
     (e: Konva.KonvaEventObject<MouseEvent | TouchEvent>) => {
+      activateCanvasForRole();
       setIsDrawing(true);
       const stage = e.target.getStage();
       const pos = stage?.getPointerPosition();
@@ -80,14 +135,24 @@ export default function DrawingCanvas({ width, height }: DrawingCanvasProps) {
         tool,
       };
 
+      const base = drawingData.lines;
       const newDrawingData: DrawingData = {
-        lines: [...currentDrawingData.lines, newLine],
+        lines: [...base, newLine],
         canvasWidth: width,
         canvasHeight: height,
       };
-      updateCurrentDrawing(newDrawingData);
+      applyDrawingUpdate(newDrawingData);
     },
-    [currentDrawingData, updateCurrentDrawing, tool, color, strokeWidth, width, height]
+    [
+      activateCanvasForRole,
+      applyDrawingUpdate,
+      color,
+      drawingData.lines,
+      strokeWidth,
+      tool,
+      width,
+      height,
+    ]
   );
 
   const handleMouseMove = useCallback(
@@ -98,11 +163,10 @@ export default function DrawingCanvas({ width, height }: DrawingCanvasProps) {
       const pos = stage?.getPointerPosition();
       if (!pos) return;
 
-      const lines = currentDrawingData.lines;
+      const lines = drawingData.lines;
       const lastLine = lines[lines.length - 1];
       if (!lastLine) return;
 
-      // Add point to current line
       const updatedLine = {
         ...lastLine,
         points: [...lastLine.points, pos.x, pos.y],
@@ -113,30 +177,24 @@ export default function DrawingCanvas({ width, height }: DrawingCanvasProps) {
         canvasWidth: width,
         canvasHeight: height,
       };
-      updateCurrentDrawing(newDrawingData);
+      applyDrawingUpdate(newDrawingData);
     },
-    [isDrawing, currentDrawingData, updateCurrentDrawing, width, height]
+    [applyDrawingUpdate, drawingData.lines, height, isDrawing, width]
   );
 
   const handleMouseUp = useCallback(() => {
     if (isDrawing) {
-      // Push current state to history for undo/redo
-      pushHistory(currentDrawingData.lines);
+      const sess = useSessionStore.getState();
+      if (isFreePane) {
+        const lines = sess.freeDrawDrawings[pathForFree]?.lines ?? [];
+        pushFreeHistory(lines);
+      } else {
+        pushHistory(sess.currentDrawingData.lines);
+      }
     }
     setIsDrawing(false);
-  }, [isDrawing, currentDrawingData.lines, pushHistory]);
+  }, [isDrawing, isFreePane, pathForFree, pushFreeHistory, pushHistory]);
 
-  // Export canvas as data URL
-  const exportCanvas = useCallback(() => {
-    const stage = stageRef.current;
-    if (!stage) return null;
-    return stage.toDataURL({ pixelRatio: 2 });
-  }, []);
-
-  // Make export function available globally for save functionality
-  (window as unknown as { exportDrawingCanvas: () => string | null }).exportDrawingCanvas = exportCanvas;
-
-  // Render a line with brush-specific properties
   const renderLine = (line: DrawingData["lines"][0], index: number) => {
     const config = getBrushConfig(line.tool);
     const isEraser = line.tool === "eraser";
@@ -159,11 +217,16 @@ export default function DrawingCanvas({ width, height }: DrawingCanvasProps) {
   };
 
   return (
-    <div ref={containerRef} style={{ touchAction: "none" }}>
+    <div
+      ref={containerRef}
+      className={!isActive ? "pointer-events-none" : undefined}
+      style={{ touchAction: "none" }}
+    >
       <Stage
         ref={stageRef}
         width={width}
         height={height}
+        listening={isActive}
         onMouseDown={handleMouseDown}
         onMousemove={handleMouseMove}
         onMouseup={handleMouseUp}
@@ -171,10 +234,10 @@ export default function DrawingCanvas({ width, height }: DrawingCanvasProps) {
         onTouchStart={handleMouseDown}
         onTouchMove={handleMouseMove}
         onTouchEnd={handleMouseUp}
-        style={{ cursor: "crosshair" }}
+        style={{ cursor: isActive ? "crosshair" : "default" }}
       >
         <Layer>
-          {currentDrawingData.lines.map((line, i) => renderLine(line, i))}
+          {drawingData.lines.map((line, i) => renderLine(line, i))}
         </Layer>
       </Stage>
     </div>

@@ -595,6 +595,9 @@ export default function FolderPicker() {
       setEraserDisabled(persisted.eraserDisabled);
       setTimerHidden(persisted.timerHidden);
     }
+    if (persisted.preferSplitScreen === true) {
+      useSessionStore.setState({ isSplitScreen: true, isCompareMode: false });
+    }
     enterSetup();
   };
 
@@ -619,6 +622,11 @@ export default function FolderPicker() {
       currentIndex: 0,
       drawings: session.drawings ?? {},
       settings: session.settings,
+      curatorDrawings: session.curatorDrawings,
+      freeDrawDrawings: session.freeDrawDrawings,
+      imageGuidelines: session.imageGuidelines,
+      isSplitScreen: session.isSplitScreen,
+      splitSidesSwapped: session.splitSidesSwapped,
     });
   };
 

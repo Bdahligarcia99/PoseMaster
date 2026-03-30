@@ -88,22 +88,30 @@ interface DrawingState {
   tool: BrushType;
   color: string;
   strokeWidth: number;
-  
-  // History for undo
+
+  // History for undo (curator / unified canvas)
   history: Array<{
     lines: LineData[];
   }>;
   historyIndex: number;
-  
+
+  /** Separate stack for split free-draw pane so toolbar undo targets the active canvas. */
+  freeHistory: Array<{ lines: LineData[] }>;
+  freeHistoryIndex: number;
+
   // Actions
   setTool: (tool: BrushType) => void;
   setColor: (color: string) => void;
   setStrokeWidth: (width: number) => void;
-  
+
   pushHistory: (lines: LineData[]) => void;
+  pushFreeHistory: (lines: LineData[]) => void;
   undo: () => LineData[] | null;
   redo: () => LineData[] | null;
+  undoFree: () => LineData[] | null;
+  redoFree: () => LineData[] | null;
   clearHistory: () => void;
+  clearFreeHistory: () => void;
   
   // Per-image history management
   getHistoryState: () => HistoryState;
@@ -129,6 +137,8 @@ export const useDrawingStore = create<DrawingState>((set, get) => ({
   strokeWidth: 4,
   history: [],
   historyIndex: -1,
+  freeHistory: [],
+  freeHistoryIndex: -1,
   
   setTool: (tool) => set({ tool }),
   setColor: (color) => set({ color }),
@@ -136,18 +146,31 @@ export const useDrawingStore = create<DrawingState>((set, get) => ({
   
   pushHistory: (lines) => {
     const { history, historyIndex } = get();
-    // Truncate any "future" history if we're not at the end
     const newHistory = history.slice(0, historyIndex + 1);
-    newHistory.push({ lines: [...lines] });
-    
-    // Limit history size
+    newHistory.push({ lines: lines.map((l) => ({ ...l, points: [...l.points] })) });
+
     if (newHistory.length > 50) {
       newHistory.shift();
     }
-    
+
     set({
       history: newHistory,
       historyIndex: newHistory.length - 1,
+    });
+  },
+
+  pushFreeHistory: (lines) => {
+    const { freeHistory, freeHistoryIndex } = get();
+    const newHistory = freeHistory.slice(0, freeHistoryIndex + 1);
+    newHistory.push({ lines: lines.map((l) => ({ ...l, points: [...l.points] })) });
+
+    if (newHistory.length > 50) {
+      newHistory.shift();
+    }
+
+    set({
+      freeHistory: newHistory,
+      freeHistoryIndex: newHistory.length - 1,
     });
   },
   
@@ -167,13 +190,35 @@ export const useDrawingStore = create<DrawingState>((set, get) => ({
   redo: () => {
     const { history, historyIndex } = get();
     if (historyIndex >= history.length - 1) return null;
-    
+
     const newIndex = historyIndex + 1;
     set({ historyIndex: newIndex });
     return history[newIndex]?.lines || [];
   },
-  
+
+  undoFree: () => {
+    const { freeHistory, freeHistoryIndex } = get();
+    if (freeHistory.length === 0 || freeHistoryIndex < 0) return null;
+
+    const newIndex = freeHistoryIndex - 1;
+    set({ freeHistoryIndex: newIndex });
+
+    if (newIndex < 0) return [];
+    return freeHistory[newIndex]?.lines || [];
+  },
+
+  redoFree: () => {
+    const { freeHistory, freeHistoryIndex } = get();
+    if (freeHistoryIndex >= freeHistory.length - 1) return null;
+
+    const newIndex = freeHistoryIndex + 1;
+    set({ freeHistoryIndex: newIndex });
+    return freeHistory[newIndex]?.lines || [];
+  },
+
   clearHistory: () => set({ history: [], historyIndex: -1 }),
+
+  clearFreeHistory: () => set({ freeHistory: [], freeHistoryIndex: -1 }),
   
   getHistoryState: () => {
     const { history, historyIndex } = get();
