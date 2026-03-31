@@ -7,13 +7,21 @@ import { useSettingsStore, ImageCountMode, ImageSourceFilter, UrlCollection } fr
 import type { SessionImage } from "../store/sessionStore";
 import DownloadProgressModal from "./DownloadProgressModal";
 import { useSavedSessionsStore, SavedSession } from "../store/savedSessionsStore";
-import { usePresetsStore, Preset, PresetMode } from "../store/presetsStore";
+import PrebuiltPresetTile from "./PrebuiltPresetTile";
+import UserPresetCard from "./UserPresetCard";
+import SavePresetDialog from "./SavePresetDialog";
+import { usePresetsStore, Preset, PREBUILT_PRESETS } from "../store/presetsStore";
 import TimerPresets from "./TimerPresets";
 import PreviousSessions from "./PreviousSessions";
 import ModeSelection, { PracticeMode } from "./ModeSelection";
 import TabNav from "./TabNav";
 import { APP_VERSION } from "../version";
 import { parseUrlListFile } from "../utils/urlListParser";
+
+/** Session store is hydrated from settings.json only on cold start — not on every FolderPicker remount after a session. */
+let didHydrateSessionFromPersistedSettings = false;
+/** Last-used preset applies once per app launch so returning home does not re-apply and wipe in-session tweaks. */
+let didRestoreLastUsedPresetOnLaunch = false;
 
 interface ImageInfo {
   path: string;
@@ -154,22 +162,27 @@ export default function FolderPicker() {
   const [imageCountMode, setImageCountMode] = useState<ImageCountMode>("all");
   const [selectedSpecificCount, setSelectedSpecificCount] = useState<number>(10);
   const [selectedFolderPaths, setSelectedFolderPaths] = useState<string[]>([]); // Multiple folder selection
-  const [activeTab, setActiveTab] = useState<"new-session" | "previous-sessions" | "presets">("new-session");
+  const [activeTab, setActiveTab] = useState<"new-session" | "previous-sessions" | "advanced">("new-session");
   const [showSavePresetModal, setShowSavePresetModal] = useState(false);
+  const [showSavePresetDialog, setShowSavePresetDialog] = useState(false);
   const [savePresetError, setSavePresetError] = useState<string | null>(null);
   const [presetToRename, setPresetToRename] = useState<Preset | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [savePresetName, setSavePresetName] = useState("");
   const [savePresetSuccess, setSavePresetSuccess] = useState<string | null>(null);
   const [loadPresetSuccess, setLoadPresetSuccess] = useState<string | null>(null);
+  const [userPresetsExpanded, setUserPresetsExpanded] = useState(false);
+  const [imageSourcesExpanded, setImageSourcesExpanded] = useState(false);
+  const [newPresetFromListHint, setNewPresetFromListHint] = useState(false);
   const [collectionToDownload, setCollectionToDownload] = useState<UrlCollection | null>(null);
   const [showUrlNameModal, setShowUrlNameModal] = useState(false);
   const [pendingUrlList, setPendingUrlList] = useState<{ urls: string[]; suggestedName?: string } | null>(null);
   const [urlImportError, setUrlImportError] = useState<string | null>(null);
   const [isValidatingUrls, setIsValidatingUrls] = useState(false);
   const hasAutoLoaded = useRef(false);
+  const loadPresetSuccessTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const { setFolderPaths, setFolderName, setFolderNames, setImages, enterSetup, startSession, viewSession, enterBrowseMode, timerDuration, breakDuration, setBreakDuration, setMaxImages, setTimerDuration, setTimedMode, isTimedMode, imageOpacity, imageZoom, eraserDisabled, timerHidden, markupEnabled, setImageOpacity, setImageZoom, setMarkupEnabled, setEraserDisabled, setTimerHidden, returnToPreviousSessions, clearReturnToPreviousSessions } = useSessionStore();
+  const { setFolderPaths, setFolderName, setFolderNames, setImages, enterSetup, startSession, viewSession, enterBrowseMode, timerDuration, breakDuration, setBreakDuration, setMaxImages, setTimerDuration, setTimedMode, isTimedMode, imageOpacity, imageZoom, eraserDisabled, timerHidden, markupEnabled, setImageOpacity, setImageZoom, setMarkupEnabled, setEraserDisabled, setTimerHidden, returnToPreviousSessions, clearReturnToPreviousSessions, isSplitScreen } = useSessionStore();
   
   // When returning from gallery view, switch to Previous Sessions tab
   useEffect(() => {
@@ -178,9 +191,21 @@ export default function FolderPicker() {
       clearReturnToPreviousSessions();
     }
   }, [returnToPreviousSessions, clearReturnToPreviousSessions]);
-  const { savedFolders, urlCollections, settings, isLoaded, loadSettings, addFolder, removeFolder, addUrlCollection, updateSettings, setLastSelectedFolders, setLastSelectedUrlCollectionIds, toggleUrlCollectionSelection, setRememberHomeSettings, clearRememberFlags, updateUrlCollectionMode, setUrlCollectionCachePath, clearUrlCollectionCache, removeUrlCollection, setImageSourceFilter } = useSettingsStore();
-  const rememberReadyForPreset =
-    settings.rememberHomeSettings === true && settings.rememberSetupSettings === true;
+
+  useEffect(() => {
+    if (activeTab !== "advanced") {
+      setNewPresetFromListHint(false);
+    }
+  }, [activeTab]);
+
+  useEffect(() => {
+    return () => {
+      if (loadPresetSuccessTimeoutRef.current) {
+        clearTimeout(loadPresetSuccessTimeoutRef.current);
+      }
+    };
+  }, []);
+  const { savedFolders, urlCollections, settings, isLoaded, loadSettings, addFolder, removeFolder, addUrlCollection, updateSettings, setLastSelectedFolders, setLastSelectedUrlCollectionIds, toggleUrlCollectionSelection, updateUrlCollectionMode, setUrlCollectionCachePath, clearUrlCollectionCache, removeUrlCollection, setImageSourceFilter } = useSettingsStore();
   const { loadSessions } = useSavedSessionsStore();
   const { presets, isLoaded: _presetsLoaded, loadPresets, savePreset, deletePreset, renamePreset } = usePresetsStore();
 
@@ -329,6 +354,55 @@ export default function FolderPicker() {
     }
   }, [addFolder, selectedFolderPaths, loadMultipleFolderImages]);
 
+  /** Apply preset fields to session + Advanced tab state (no persistence or tab change). */
+  const applyPresetSettings = useCallback(
+    (preset: Preset) => {
+      const s = preset.settings;
+      const normalizedCountMode: ImageCountMode =
+        (s.imageCountMode as string) === "continuous" ? "all" : s.imageCountMode;
+
+      setTimedMode(s.isTimedMode);
+      setTimerDuration(s.timerDuration);
+      setBreakDuration(s.breakDuration);
+      setImageOpacity(s.imageOpacity);
+      setImageZoom(s.imageZoom);
+      setMarkupEnabled(s.markupEnabled);
+      setEraserDisabled(s.eraserDisabled);
+      setTimerHidden(s.timerHidden);
+
+      setImageCountMode(normalizedCountMode);
+      if (normalizedCountMode === "specific" && s.maxImages !== null) {
+        setSelectedSpecificCount(s.maxImages);
+        setMaxImages(s.maxImages);
+      } else {
+        setMaxImages(null);
+      }
+
+      {
+        const splitOn = s.splitScreenEnabled ?? false;
+        useSessionStore.setState({
+          isSplitScreen: splitOn,
+          ...(!splitOn ? { isCompareMode: false } : {}),
+        });
+      }
+
+      if (preset.mode) {
+        setSelectedMode(preset.mode);
+      }
+    },
+    [
+      setTimedMode,
+      setTimerDuration,
+      setBreakDuration,
+      setImageOpacity,
+      setImageZoom,
+      setMarkupEnabled,
+      setEraserDisabled,
+      setTimerHidden,
+      setMaxImages,
+    ]
+  );
+
   // Load settings, saved sessions, and presets on mount
   useEffect(() => {
     loadSettings();
@@ -336,23 +410,70 @@ export default function FolderPicker() {
     loadPresets();
   }, [loadSettings, loadSessions, loadPresets]);
 
-  // Apply saved settings when loaded
+  // Push persisted home/session-setup fields into session store once per app launch (avoid clobber after a session)
   useEffect(() => {
-    if (isLoaded) {
-      setTimedMode(settings.isTimedMode ?? true);
-      setTimerDuration(settings.timerDuration);
-      setBreakDuration(settings.breakDuration);
-      setImageOpacity(settings.imageOpacity);
-      setImageZoom(settings.imageZoom);
-      setMarkupEnabled(settings.markupEnabled ?? true);
-      setEraserDisabled(settings.eraserDisabled);
-      setTimerHidden(settings.timerHidden);
-      setImageCountMode(settings.imageCountMode ?? "all");
-      if (settings.imageCountMode === "specific" && settings.maxImages !== null) {
-        setSelectedSpecificCount(settings.maxImages);
-      }
+    if (!isLoaded || didHydrateSessionFromPersistedSettings) return;
+    didHydrateSessionFromPersistedSettings = true;
+    setTimedMode(settings.isTimedMode ?? true);
+    setTimerDuration(settings.timerDuration);
+    setBreakDuration(settings.breakDuration);
+    setImageOpacity(settings.imageOpacity);
+    setImageZoom(settings.imageZoom);
+    setMarkupEnabled(settings.markupEnabled ?? true);
+    setEraserDisabled(settings.eraserDisabled);
+    setTimerHidden(settings.timerHidden);
+  }, [
+    isLoaded,
+    settings.isTimedMode,
+    settings.timerDuration,
+    settings.breakDuration,
+    settings.imageOpacity,
+    settings.imageZoom,
+    settings.markupEnabled,
+    settings.eraserDisabled,
+    settings.timerHidden,
+    setTimedMode,
+    setTimerDuration,
+    setBreakDuration,
+    setImageOpacity,
+    setImageZoom,
+    setMarkupEnabled,
+    setEraserDisabled,
+    setTimerHidden,
+  ]);
+
+  // Advanced tab local state: keep image count UI in sync whenever persisted settings change or FolderPicker remounts
+  useEffect(() => {
+    if (!isLoaded) return;
+    setImageCountMode(settings.imageCountMode ?? "all");
+    if (settings.imageCountMode === "specific" && settings.maxImages !== null) {
+      setSelectedSpecificCount(settings.maxImages);
     }
-  }, [isLoaded, settings.isTimedMode, settings.timerDuration, settings.breakDuration, settings.imageCountMode, settings.maxImages, settings.imageOpacity, settings.imageZoom, settings.markupEnabled, settings.eraserDisabled, settings.timerHidden, setTimedMode, setTimerDuration, setBreakDuration, setImageOpacity, setImageZoom, setMarkupEnabled, setEraserDisabled, setTimerHidden]);
+  }, [isLoaded, settings.imageCountMode, settings.maxImages]);
+
+  // Restore last-used preset once per app launch (after disk hydration; overrides defaults / partial disk state)
+  useEffect(() => {
+    if (!isLoaded || !_presetsLoaded || didRestoreLastUsedPresetOnLaunch) return;
+
+    const id = settings.lastUsedPresetId;
+    if (!id) {
+      didRestoreLastUsedPresetOnLaunch = true;
+      return;
+    }
+
+    const prebuilt = PREBUILT_PRESETS.find((p) => p.id === id);
+    if (prebuilt) {
+      applyPresetSettings(prebuilt);
+      didRestoreLastUsedPresetOnLaunch = true;
+      return;
+    }
+
+    const userPreset = presets.find((p) => p.id === id);
+    if (userPreset) {
+      applyPresetSettings(userPreset);
+    }
+    didRestoreLastUsedPresetOnLaunch = true;
+  }, [isLoaded, _presetsLoaded, settings.lastUsedPresetId, presets, applyPresetSettings]);
 
   // Auto-load last selected folders and URL collections (only once)
   useEffect(() => {
@@ -562,11 +683,8 @@ export default function FolderPicker() {
 
   // Common setup before starting any session
   const prepareSession = () => {
-    // Save current settings only when user has enabled Remember
-    if (settings.rememberHomeSettings) {
-      saveCurrentSettings();
-    }
-    
+    saveCurrentSettings();
+
     // Set folder names for potential saving later
     if (selectedFolderPaths.length > 0) {
       const names = selectedFolderPaths.map(p => p.split("/").pop() || p.split("\\").pop() || p);
@@ -585,16 +703,12 @@ export default function FolderPicker() {
   // Open session setup to adjust display settings
   const handleSessionSetup = () => {
     prepareSession();
-    // When "Remember" is on for Session Setup, align session store with persisted settings
-    // so markup/opacity/zoom/etc. match what was last saved (fixes drift after session end).
     const persisted = useSettingsStore.getState().settings;
-    if (persisted.rememberSetupSettings === true) {
-      setMarkupEnabled(persisted.markupEnabled ?? true);
-      setImageOpacity(persisted.imageOpacity);
-      setImageZoom(persisted.imageZoom);
-      setEraserDisabled(persisted.eraserDisabled);
-      setTimerHidden(persisted.timerHidden);
-    }
+    setMarkupEnabled(persisted.markupEnabled ?? true);
+    setImageOpacity(persisted.imageOpacity);
+    setImageZoom(persisted.imageZoom);
+    setEraserDisabled(persisted.eraserDisabled);
+    setTimerHidden(persisted.timerHidden);
     if (persisted.preferSplitScreen === true) {
       useSessionStore.setState({ isSplitScreen: true, isCompareMode: false });
     }
@@ -605,6 +719,39 @@ export default function FolderPicker() {
   const handleNewSession = () => {
     prepareSession();
     startSession();
+  };
+
+  const handleBeginSessionClick = () => {
+    setShowSavePresetDialog(true);
+  };
+
+  const handleSavePresetAndStart = async (name: string) => {
+    const presetSettings = {
+      isTimedMode,
+      timerDuration,
+      breakDuration,
+      imageCountMode,
+      maxImages: imageCountMode === "specific" ? selectedSpecificCount : null,
+      imageOpacity: imageOpacity ?? 100,
+      imageZoom: imageZoom ?? 100,
+      eraserDisabled: eraserDisabled ?? false,
+      timerHidden: timerHidden ?? false,
+      markupEnabled: markupEnabled ?? true,
+      splitScreenEnabled: isSplitScreen ?? false,
+    };
+    const newPresetId = await savePreset(name, selectedMode, presetSettings);
+    await updateSettings({ lastUsedPresetId: newPresetId });
+    setShowSavePresetDialog(false);
+    handleNewSession();
+  };
+
+  const handleSkipSaveAndStart = () => {
+    setShowSavePresetDialog(false);
+    handleNewSession();
+  };
+
+  const handleCancelSaveDialog = () => {
+    setShowSavePresetDialog(false);
   };
 
   // Browse gallery without starting a session
@@ -630,68 +777,53 @@ export default function FolderPicker() {
     });
   };
 
-  // Preset helpers
-  const getModeBadgeLabel = (mode: PresetMode) => {
-    switch (mode) {
-      case "image-curator": return "Image Curator";
-      case "free-draw": return "Free Draw";
-      case "3d-perspective": return "3D & Perspective";
-      default: return mode;
+  const scheduleLoadPresetSuccessClear = (ms: number) => {
+    if (loadPresetSuccessTimeoutRef.current) {
+      clearTimeout(loadPresetSuccessTimeoutRef.current);
+      loadPresetSuccessTimeoutRef.current = null;
     }
+    loadPresetSuccessTimeoutRef.current = setTimeout(() => {
+      setLoadPresetSuccess(null);
+      loadPresetSuccessTimeoutRef.current = null;
+    }, ms);
   };
 
+  /** Load preset into session + persist settings. Same path for user and prebuilt presets. */
   const handleLoadPreset = async (preset: Preset) => {
     const s = preset.settings;
-    const modeMismatch = preset.mode !== selectedMode;
-    if (modeMismatch) {
-      setSelectedMode(preset.mode);
-    }
-    setTimedMode(s.isTimedMode);
-    setTimerDuration(s.timerDuration);
-    setBreakDuration(s.breakDuration);
-    setImageOpacity(s.imageOpacity);
-    setImageZoom(s.imageZoom);
-    setEraserDisabled(s.eraserDisabled);
-    setTimerHidden(s.timerHidden);
-    setMarkupEnabled(s.markupEnabled);
-    setImageCountMode((s.imageCountMode as string) === "continuous" ? "all" : s.imageCountMode);
-    setMaxImages(s.maxImages);
-    if (s.imageCountMode === "specific" && s.maxImages !== null) {
-      setSelectedSpecificCount(s.maxImages);
-    }
+    const imageCountMode: ImageCountMode =
+      (s.imageCountMode as string) === "continuous" ? "all" : s.imageCountMode;
+
+    applyPresetSettings(preset);
+
     await updateSettings({
       isTimedMode: s.isTimedMode,
       timerDuration: s.timerDuration,
       breakDuration: s.breakDuration,
-      imageCountMode: (s.imageCountMode as string) === "continuous" ? "all" : s.imageCountMode,
-      maxImages: s.maxImages,
+      imageCountMode,
+      maxImages: imageCountMode === "specific" ? s.maxImages : null,
       imageOpacity: s.imageOpacity,
       imageZoom: s.imageZoom,
+      markupEnabled: s.markupEnabled,
       eraserDisabled: s.eraserDisabled,
       timerHidden: s.timerHidden,
-      markupEnabled: s.markupEnabled,
+      lastUsedPresetId: preset.id,
     });
-    const modeLabel = getModeBadgeLabel(preset.mode);
-    setLoadPresetSuccess(
-      modeMismatch
-        ? `Preset "${preset.name}" loaded (switched to ${modeLabel})`
-        : `Preset "${preset.name}" loaded`
-    );
-    setTimeout(() => setLoadPresetSuccess(null), 3000);
-    setActiveTab("new-session");
+
+    setLoadPresetSuccess(`Preset "${preset.name}" loaded`);
+    scheduleLoadPresetSuccessClear(3000);
+    setActiveTab("advanced");
+  };
+
+  const handleSelectPrebuiltPreset = async (preset: Preset) => {
+    await handleLoadPreset(preset);
+    setLoadPresetSuccess("Preset loaded. Select folders to begin.");
+    scheduleLoadPresetSuccessClear(5000);
   };
 
   const handleSavePresetClick = () => {
     setSavePresetError(null);
     setSavePresetSuccess(null);
-    const home = settings.rememberHomeSettings === true;
-    const setup = settings.rememberSetupSettings === true;
-    if (!home || !setup) {
-      setSavePresetError(
-        "To save a preset, enable 'Remember current settings' in both:\n• New Session tab\n• Session Setup (click Session Setup button, then Settings)"
-      );
-      return;
-    }
     const defaultName = `Preset #${presets.length + 1}`;
     setSavePresetName(defaultName);
     setShowSavePresetModal(true);
@@ -709,9 +841,9 @@ export default function FolderPicker() {
       eraserDisabled: eraserDisabled ?? false,
       timerHidden: timerHidden ?? false,
       markupEnabled: markupEnabled ?? true,
+      splitScreenEnabled: isSplitScreen ?? false,
     };
     await savePreset(name, selectedMode, presetSettings);
-    await clearRememberFlags();
     setShowSavePresetModal(false);
     setSavePresetName("");
     setSavePresetSuccess(`Preset "${name}" saved`);
@@ -731,20 +863,240 @@ export default function FolderPicker() {
     }
   };
 
-  const handleDeletePreset = async (id: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (confirm("Delete this preset?")) {
-      await deletePreset(id);
-    }
+  const handleDeletePreset = async (id: string) => {
+    await deletePreset(id);
   };
 
-  const formatPresetDate = (timestamp: number) => {
-    return new Date(timestamp).toLocaleDateString(undefined, {
-      month: "short",
-      day: "numeric",
-      year: "numeric",
-    });
+  const handleNewPresetClick = () => {
+    setActiveTab("advanced");
+    setNewPresetFromListHint(true);
   };
+
+  const renderImageSourcesPanel = () => (
+    <>
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <h2 className="text-sm font-medium text-dark-muted uppercase tracking-wide">Image Sources</h2>
+          <select
+            value={settings.imageSourceFilter || "all"}
+            onChange={(e) => setImageSourceFilter(e.target.value as ImageSourceFilter)}
+            className="px-2 py-1 text-xs bg-dark-bg border border-dark-accent rounded-lg text-dark-muted
+                       focus:outline-none focus:border-blue-500 cursor-pointer hover:border-dark-text/50"
+          >
+            <option value="all">All</option>
+            <option value="folders">Folders</option>
+            <option value="url-lists">URL Lists</option>
+          </select>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={handleImportUrls}
+            disabled={isLoading}
+            className="px-3 py-1.5 bg-dark-bg hover:bg-dark-accent disabled:opacity-50 
+                       rounded-lg text-dark-text text-sm font-medium transition-colors 
+                       flex items-center gap-2 border border-dark-accent"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+            </svg>
+            Import URLs
+          </button>
+          <button
+            type="button"
+            onClick={handleSelectNewFolder}
+            disabled={isLoading}
+            className="px-3 py-1.5 bg-dark-accent hover:bg-blue-700 disabled:opacity-50 
+                       rounded-lg text-dark-text text-sm font-medium transition-colors 
+                       flex items-center gap-2"
+          >
+            {isLoading ? (
+              <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+            ) : (
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+              </svg>
+            )}
+            Add Folder
+          </button>
+        </div>
+      </div>
+
+      {urlImportError && (
+        <div className="mb-3 p-2 bg-red-900/30 border border-red-700 rounded-lg text-red-300 text-sm">
+          {urlImportError}
+        </div>
+      )}
+
+      {(settings.imageSourceFilter === "all" || settings.imageSourceFilter === "folders") && (
+        <div className="flex flex-wrap gap-2">
+          {savedFolders.length === 0 ? (
+            <p className="text-dark-muted text-sm py-2">No folders added yet. Click &quot;Add Folder&quot; to get started.</p>
+          ) : (
+            savedFolders.map((folder) => {
+              const isSelected = selectedFolderPaths.includes(folder.path);
+              return (
+                <div key={folder.path} className="relative group">
+                  <button
+                    type="button"
+                    onClick={() => !isLoading && handleToggleFolderSelection(folder.path)}
+                    className={`px-4 py-2 rounded-lg font-medium transition-colors flex items-center gap-2
+                      ${isSelected
+                        ? "bg-blue-600 text-white ring-2 ring-blue-400 ring-offset-2 ring-offset-dark-surface"
+                        : "bg-dark-bg text-dark-text hover:bg-dark-accent"
+                      }`}
+                  >
+                    <div className={`w-4 h-4 rounded border-2 flex items-center justify-center transition-colors
+                      ${isSelected ? "bg-white border-white" : "border-dark-muted"}`}
+                    >
+                      {isSelected && (
+                        <svg className="w-3 h-3 text-blue-600" fill="currentColor" viewBox="0 0 20 20">
+                          <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                        </svg>
+                      )}
+                    </div>
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                    </svg>
+                    <span>{folder.name}</span>
+                    <span className={`text-xs ${isSelected ? "text-blue-200" : "text-dark-muted"}`}>
+                      ({folder.imageCount})
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => handleRemoveFolder(folder.path, e)}
+                    className="absolute -top-1 -right-1 w-5 h-5 bg-red-500 hover:bg-red-600 rounded-full 
+                               text-white opacity-0 group-hover:opacity-100 transition-opacity
+                               flex items-center justify-center"
+                    title="Remove folder"
+                  >
+                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                </div>
+              );
+            })
+          )}
+        </div>
+      )}
+
+      {(settings.imageSourceFilter === "all" || settings.imageSourceFilter === "url-lists") && urlCollections.length === 0 && settings.imageSourceFilter === "url-lists" && (
+        <p className="text-dark-muted text-sm py-2">No URL collections yet. Click &quot;Import URLs&quot; to add a list of image URLs.</p>
+      )}
+      {(settings.imageSourceFilter === "all" || settings.imageSourceFilter === "url-lists") && urlCollections.length > 0 && (
+        <div className="mt-4 pt-4 border-t border-dark-accent">
+          <h3 className="text-sm font-medium text-dark-muted uppercase tracking-wide mb-2">URL Collections</h3>
+          <div className="flex flex-wrap gap-2">
+            {urlCollections.map((coll) => {
+              const isSelected = selectedUrlCollectionIds.includes(coll.id);
+              return (
+                <div key={coll.id} className="relative group">
+                  <button
+                    type="button"
+                    onClick={() => !isLoading && handleToggleUrlCollectionSelection(coll.id)}
+                    className={`px-4 py-2 rounded-lg font-medium flex items-center gap-2 transition-colors
+                      ${isSelected
+                        ? "bg-blue-600 text-white ring-2 ring-blue-400 ring-offset-2 ring-offset-dark-surface"
+                        : "bg-dark-bg text-dark-text border border-dark-accent hover:bg-dark-accent"
+                      }`}
+                  >
+                    <div className={`w-4 h-4 rounded border-2 flex items-center justify-center transition-colors
+                      ${isSelected ? "bg-white border-white" : "border-dark-muted"}`}
+                    >
+                      {isSelected && (
+                        <svg className="w-3 h-3 text-blue-600" fill="currentColor" viewBox="0 0 20 20">
+                          <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                        </svg>
+                      )}
+                    </div>
+                    <span>🔗</span>
+                    <span>{coll.name}</span>
+                    <span className={`text-xs ${isSelected ? "text-blue-200" : "text-dark-muted"}`}>({coll.imageCount})</span>
+                    <span className={`text-xs px-1.5 py-0.5 rounded ${coll.mode === "offline" ? "bg-green-600/30 text-green-400" : "bg-blue-600/30 text-blue-400"}`}>
+                      {coll.mode === "offline" ? "Offline ✓" : "Stream"}
+                    </span>
+                  </button>
+                  <div className="flex gap-1 mt-1">
+                    {coll.mode === "stream" ? (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleSwitchToOffline(coll);
+                        }}
+                        className="px-2 py-1 text-xs bg-green-600/80 hover:bg-green-600 rounded text-white"
+                      >
+                        Switch to Offline
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleSwitchToStream(coll);
+                        }}
+                        className="px-2 py-1 text-xs bg-dark-accent hover:bg-dark-bg rounded text-dark-text"
+                      >
+                        Switch to Stream
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        removeUrlCollection(coll.id);
+                      }}
+                      className="px-2 py-1 text-xs bg-red-600/50 hover:bg-red-600 rounded text-white"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {(selectedFolderPaths.length > 0 || selectedUrlCollectionIds.length > 0) && (
+        <div className="mt-3 pt-3 border-t border-dark-accent">
+          <p className="text-dark-muted text-sm">
+            {selectedFolderPaths.length > 0 && (
+              <>
+                <span className="text-dark-text font-medium">{selectedFolderPaths.length}</span> folder{selectedFolderPaths.length !== 1 ? "s" : ""} selected
+                {selectedUrlCollectionIds.length > 0 && " • "}
+              </>
+            )}
+            {selectedUrlCollectionIds.length > 0 && (
+              <>
+                <span className="text-dark-text font-medium">{selectedUrlCollectionIds.length}</span> URL collection{selectedUrlCollectionIds.length !== 1 ? "s" : ""} selected
+                {" • "}
+              </>
+            )}
+            <span className="text-dark-text font-medium">{totalImages}</span> images total
+          </p>
+        </div>
+      )}
+
+      {error && (
+        <div className="mt-3 p-2 bg-red-900/30 border border-red-700 rounded-lg text-red-300 text-sm">
+          {error}
+        </div>
+      )}
+
+      {totalImages === 0 && (
+        <div className="mt-3 rounded-lg border border-dark-accent/50 bg-dark-bg/40 p-5 text-center text-dark-muted text-sm">
+          <p>Select folders or URL collections containing reference images to begin.</p>
+          <p className="text-xs mt-1">Supported: JPG, PNG, GIF, WebP, BMP, TIFF</p>
+        </div>
+      )}
+    </>
+  );
 
   return (
     <div className="min-h-screen bg-dark-bg overflow-y-auto">
@@ -765,7 +1117,7 @@ export default function FolderPicker() {
             <AppDescription />
           </div>
 
-          {/* Load preset success message - visible after switching to New Session */}
+          {/* Load preset success message (shown after switching to Advanced so applied settings are visible) */}
           {loadPresetSuccess && (
             <div className="bg-green-500/20 border border-green-500/50 rounded-lg px-4 py-2 text-green-400 text-sm">
               {loadPresetSuccess}
@@ -779,7 +1131,217 @@ export default function FolderPicker() {
                 id: "new-session",
                 label: "New Session",
                 content: (
+                  <div className="space-y-6 bg-dark-surface rounded-b-xl p-4 border-x border-b border-dark-accent min-h-[280px]">
+                    {/* Built-in presets — distinct frame, larger tiles on md+ */}
+                    <div className="rounded-xl border border-blue-500/35 bg-gradient-to-b from-blue-950/30 via-dark-bg/50 to-dark-bg/20 p-5 ring-1 ring-inset ring-blue-400/10">
+                      <h2 className="text-sm font-medium uppercase tracking-wide text-blue-200/95">
+                        Built-in presets
+                      </h2>
+                      <p className="mt-1 text-xs text-dark-muted">
+                        One tap loads timers and options. Expand{" "}
+                        <span className="font-medium text-dark-text">Image Sources</span> below to pick folders or URL lists.
+                      </p>
+                      <div className="mt-4 mb-6 grid grid-cols-2 gap-4 md:grid-cols-4">
+                        {PREBUILT_PRESETS.map((preset) => (
+                          <div
+                            key={preset.id}
+                            className="[&_button]:min-h-[120px] md:[&_button]:min-h-[148px] md:[&_button]:p-5 md:[&_button]:text-[0.95rem]"
+                          >
+                            <PrebuiltPresetTile preset={preset} onSelect={handleSelectPrebuiltPreset} />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="mt-6">
+                      <button
+                        type="button"
+                        id="image-sources-toggle"
+                        aria-expanded={imageSourcesExpanded}
+                        aria-controls="image-sources-panel"
+                        onClick={() => setImageSourcesExpanded((e) => !e)}
+                        className="flex w-full items-center justify-between rounded-lg bg-dark-surface px-4 py-3
+                                   transition-colors hover:bg-dark-accent"
+                      >
+                        <span className="text-left font-medium text-dark-text">
+                          Image Sources
+                          <span className="ml-2 font-normal text-dark-muted">
+                            {selectedFolderPaths.length + selectedUrlCollectionIds.length > 0
+                              ? `(${selectedFolderPaths.length + selectedUrlCollectionIds.length} selected, ${totalImages} images)`
+                              : "(none selected)"}
+                          </span>
+                        </span>
+                        <svg
+                          className={`h-5 w-5 shrink-0 text-dark-muted transition-transform ${imageSourcesExpanded ? "rotate-180" : ""}`}
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                          aria-hidden
+                        >
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                        </svg>
+                      </button>
+                      {imageSourcesExpanded && (
+                        <div
+                          id="image-sources-panel"
+                          role="region"
+                          aria-labelledby="image-sources-toggle"
+                          className="mt-3 rounded-xl bg-dark-surface p-4"
+                        >
+                          {renderImageSourcesPanel()}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="border-t border-dark-accent/50 pt-6">
+                      {/* Save New Preset — always visible */}
+                      <div className="flex flex-col gap-2">
+                        <button
+                          onClick={handleSavePresetClick}
+                          className="w-full px-4 py-3 bg-blue-600 hover:bg-blue-700 rounded-lg text-white 
+                                     font-medium transition-colors flex items-center justify-center gap-2"
+                        >
+                          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" />
+                          </svg>
+                          Save New Preset
+                        </button>
+                        {savePresetError && (
+                          <p className="text-red-400 text-sm px-2 whitespace-pre-line">{savePresetError}</p>
+                        )}
+                        {savePresetSuccess && (
+                          <p className="text-green-400 text-sm px-2">{savePresetSuccess}</p>
+                        )}
+                      </div>
+
+                      <div className="mt-6">
+                        <button
+                          type="button"
+                          id="user-presets-toggle"
+                          aria-expanded={userPresetsExpanded}
+                          aria-controls="user-presets-panel"
+                          onClick={() => setUserPresetsExpanded((e) => !e)}
+                          className="flex w-full items-center justify-between rounded-lg bg-dark-surface px-4 py-3
+                                     transition-colors hover:bg-dark-accent"
+                        >
+                          <span className="font-medium text-dark-text">
+                            My Presets ({presets.length})
+                          </span>
+                          <svg
+                            className={`h-5 w-5 text-dark-muted transition-transform ${
+                              userPresetsExpanded ? "rotate-180" : ""
+                            }`}
+                            fill="none"
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
+                            aria-hidden
+                          >
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                          </svg>
+                        </button>
+
+                        {userPresetsExpanded && (
+                          <div
+                            id="user-presets-panel"
+                            role="region"
+                            aria-labelledby="user-presets-toggle"
+                            className="mt-3 space-y-2"
+                          >
+                            {presets.length === 0 ? (
+                              <p className="px-4 py-2 text-sm text-dark-muted">
+                                No custom presets yet. Create one from the Advanced tab.
+                              </p>
+                            ) : (
+                              presets.map((preset) => (
+                                <UserPresetCard
+                                  key={preset.id}
+                                  preset={preset}
+                                  onLoad={handleLoadPreset}
+                                  onDelete={handleDeletePreset}
+                                  onRename={handleRenamePresetStart}
+                                />
+                              ))
+                            )}
+
+                            <button
+                              type="button"
+                              onClick={handleNewPresetClick}
+                              className="flex w-full items-center justify-center gap-2 rounded-lg border border-dashed border-dark-accent
+                                         bg-dark-surface px-4 py-3 text-dark-muted transition-colors hover:bg-dark-accent hover:text-dark-text"
+                            >
+                              <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                              </svg>
+                              <span>New Preset</span>
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ),
+              },
+              {
+                id: "previous-sessions",
+                label: "Previous Sessions",
+                content: (
+                  <div className="bg-dark-surface rounded-b-xl overflow-hidden">
+                    <PreviousSessions
+                      onBack={() => setActiveTab("new-session")}
+                      onView={handleViewSession}
+                      embedded
+                    />
+                  </div>
+                ),
+              },
+              {
+                id: "advanced",
+                label: "Advanced",
+                content: (
                   <div className="space-y-6 bg-dark-surface rounded-b-xl p-4 border-x border-b border-dark-accent">
+          {newPresetFromListHint && (
+            <div
+              className="flex items-start justify-between gap-3 rounded-lg border border-blue-500/40 bg-blue-950/40 px-4 py-3 text-sm text-dark-text"
+              role="status"
+            >
+              <p>
+                Configure settings on this tab, then choose <span className="font-medium">Begin Session</span>. You can save your setup as a preset when prompted.
+              </p>
+              <button
+                type="button"
+                onClick={() => setNewPresetFromListHint(false)}
+                className="shrink-0 rounded p-1 text-dark-muted hover:bg-dark-accent hover:text-dark-text"
+                aria-label="Dismiss"
+              >
+                <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+          )}
+          {selectedMode === "image-curator" &&
+            (selectedFolderPaths.length > 0 || selectedUrlCollectionIds.length > 0) && (
+              <div className="rounded-xl border border-dark-accent/40 bg-dark-bg p-4">
+                <p className="text-sm text-dark-muted">
+                  <span className="font-medium text-dark-text">{totalImages}</span> images from{" "}
+                  <span className="font-medium text-dark-text">
+                    {selectedFolderPaths.length + selectedUrlCollectionIds.length}
+                  </span>{" "}
+                  sources
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActiveTab("new-session");
+                      setImageSourcesExpanded(true);
+                    }}
+                    className="ml-2 text-blue-400 underline hover:text-blue-300"
+                  >
+                    Change
+                  </button>
+                </p>
+              </div>
+            )}
+          {/* Session configuration: mode, sources, timers, actions */}
           {/* 1. Mode Selection Block */}
           <div className="bg-dark-bg rounded-xl p-4">
             <h2 className="text-sm font-medium text-dark-muted uppercase tracking-wide mb-3">
@@ -795,368 +1357,114 @@ export default function FolderPicker() {
           >
             {selectedMode === "image-curator" ? (
               <div className="space-y-4">
-                {/* Folder Selection */}
-                <div className="bg-dark-surface rounded-xl p-4">
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center gap-3">
-                <h2 className="text-sm font-medium text-dark-muted uppercase tracking-wide">Image Sources</h2>
-                <select
-                  value={settings.imageSourceFilter || "all"}
-                  onChange={(e) => setImageSourceFilter(e.target.value as ImageSourceFilter)}
-                  className="px-2 py-1 text-xs bg-dark-bg border border-dark-accent rounded-lg text-dark-muted
-                             focus:outline-none focus:border-blue-500 cursor-pointer hover:border-dark-text/50"
-                >
-                  <option value="all">All</option>
-                  <option value="folders">Folders</option>
-                  <option value="url-lists">URL Lists</option>
-                </select>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={handleImportUrls}
-                  disabled={isLoading}
-                  className="px-3 py-1.5 bg-dark-bg hover:bg-dark-accent disabled:opacity-50 
-                             rounded-lg text-dark-text text-sm font-medium transition-colors 
-                             flex items-center gap-2 border border-dark-accent"
-                >
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
-                  </svg>
-                  Import URLs
-                </button>
-                <button
-                  onClick={handleSelectNewFolder}
-                  disabled={isLoading}
-                  className="px-3 py-1.5 bg-dark-accent hover:bg-blue-700 disabled:opacity-50 
-                             rounded-lg text-dark-text text-sm font-medium transition-colors 
-                             flex items-center gap-2"
-                >
-                  {isLoading ? (
-                    <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                    </svg>
-                  ) : (
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-                    </svg>
-                  )}
-                  Add Folder
-                </button>
-              </div>
-            </div>
-            
-            {/* URL Import Error */}
-            {urlImportError && (
-              <div className="mb-3 p-2 bg-red-900/30 border border-red-700 rounded-lg text-red-300 text-sm">
-                {urlImportError}
-              </div>
-            )}
-            
-            {/* Folder Buttons - Multi-select with checkboxes */}
-            {(settings.imageSourceFilter === "all" || settings.imageSourceFilter === "folders") && (
-            <div className="flex flex-wrap gap-2">
-              {savedFolders.length === 0 ? (
-                <p className="text-dark-muted text-sm py-2">No folders added yet. Click "Add Folder" to get started.</p>
-              ) : (
-                savedFolders.map((folder) => {
-                  const isSelected = selectedFolderPaths.includes(folder.path);
-                  return (
-                    <div key={folder.path} className="relative group">
-                      <button
-                        onClick={() => !isLoading && handleToggleFolderSelection(folder.path)}
-                        className={`px-4 py-2 rounded-lg font-medium transition-colors flex items-center gap-2
-                          ${isSelected
-                            ? "bg-blue-600 text-white ring-2 ring-blue-400 ring-offset-2 ring-offset-dark-surface" 
-                            : "bg-dark-bg text-dark-text hover:bg-dark-accent"
-                          }`}
-                      >
-                        {/* Checkbox indicator */}
-                        <div className={`w-4 h-4 rounded border-2 flex items-center justify-center transition-colors
-                          ${isSelected 
-                            ? "bg-white border-white" 
-                            : "border-dark-muted"
-                          }`}
-                        >
-                          {isSelected && (
-                            <svg className="w-3 h-3 text-blue-600" fill="currentColor" viewBox="0 0 20 20">
-                              <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                            </svg>
-                          )}
-                        </div>
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-                        </svg>
-                        <span>{folder.name}</span>
-                        <span className={`text-xs ${isSelected ? "text-blue-200" : "text-dark-muted"}`}>
-                          ({folder.imageCount})
-                        </span>
-                      </button>
-                      <button
-                        onClick={(e) => handleRemoveFolder(folder.path, e)}
-                        className="absolute -top-1 -right-1 w-5 h-5 bg-red-500 hover:bg-red-600 rounded-full 
-                                   text-white opacity-0 group-hover:opacity-100 transition-opacity
-                                   flex items-center justify-center"
-                        title="Remove folder"
-                      >
-                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                        </svg>
-                      </button>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-            )}
-            
-            {/* URL Collections */}
-            {(settings.imageSourceFilter === "all" || settings.imageSourceFilter === "url-lists") && urlCollections.length === 0 && settings.imageSourceFilter === "url-lists" && (
-              <p className="text-dark-muted text-sm py-2">No URL collections yet. Click "Import URLs" to add a list of image URLs.</p>
-            )}
-            {(settings.imageSourceFilter === "all" || settings.imageSourceFilter === "url-lists") && urlCollections.length > 0 && (
-              <div className="mt-4 pt-4 border-t border-dark-accent">
-                <h3 className="text-sm font-medium text-dark-muted uppercase tracking-wide mb-2">URL Collections</h3>
-                <div className="flex flex-wrap gap-2">
-                  {urlCollections.map((coll) => {
-                    const isSelected = selectedUrlCollectionIds.includes(coll.id);
-                    return (
-                    <div key={coll.id} className="relative group">
-                      <button
-                        type="button"
-                        onClick={() => !isLoading && handleToggleUrlCollectionSelection(coll.id)}
-                        className={`px-4 py-2 rounded-lg font-medium flex items-center gap-2 transition-colors
-                          ${isSelected
-                            ? "bg-blue-600 text-white ring-2 ring-blue-400 ring-offset-2 ring-offset-dark-surface"
-                            : "bg-dark-bg text-dark-text border border-dark-accent hover:bg-dark-accent"
-                          }`}
-                      >
-                        <div className={`w-4 h-4 rounded border-2 flex items-center justify-center transition-colors
-                          ${isSelected ? "bg-white border-white" : "border-dark-muted"}`}
-                        >
-                          {isSelected && (
-                            <svg className="w-3 h-3 text-blue-600" fill="currentColor" viewBox="0 0 20 20">
-                              <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                            </svg>
-                          )}
-                        </div>
-                        <span>🔗</span>
-                        <span>{coll.name}</span>
-                        <span className={`text-xs ${isSelected ? "text-blue-200" : "text-dark-muted"}`}>({coll.imageCount})</span>
-                        <span className={`text-xs px-1.5 py-0.5 rounded ${coll.mode === "offline" ? "bg-green-600/30 text-green-400" : "bg-blue-600/30 text-blue-400"}`}>
-                          {coll.mode === "offline" ? "Offline ✓" : "Stream"}
-                        </span>
-                      </button>
-                      <div className="flex gap-1 mt-1">
-                        {coll.mode === "stream" ? (
-                          <button
-                            onClick={(e) => { e.stopPropagation(); handleSwitchToOffline(coll); }}
-                            className="px-2 py-1 text-xs bg-green-600/80 hover:bg-green-600 rounded text-white"
-                          >
-                            Switch to Offline
-                          </button>
-                        ) : (
-                          <button
-                            onClick={(e) => { e.stopPropagation(); handleSwitchToStream(coll); }}
-                            className="px-2 py-1 text-xs bg-dark-accent hover:bg-dark-bg rounded text-dark-text"
-                          >
-                            Switch to Stream
-                          </button>
-                        )}
-                        <button
-                          onClick={(e) => { e.stopPropagation(); removeUrlCollection(coll.id); }}
-                          className="px-2 py-1 text-xs bg-red-600/50 hover:bg-red-600 rounded text-white"
-                        >
-                          Remove
-                        </button>
-                      </div>
-                    </div>
-                  );
-                  })}
-                </div>
-              </div>
-            )}
-
-            {/* Selection summary */}
-            {(selectedFolderPaths.length > 0 || selectedUrlCollectionIds.length > 0) && (
-              <div className="mt-3 pt-3 border-t border-dark-accent">
-                <p className="text-dark-muted text-sm">
-                  {selectedFolderPaths.length > 0 && (
-                    <>
-                      <span className="text-dark-text font-medium">{selectedFolderPaths.length}</span> folder{selectedFolderPaths.length !== 1 ? "s" : ""} selected
-                      {selectedUrlCollectionIds.length > 0 && " • "}
-                    </>
-                  )}
-                  {selectedUrlCollectionIds.length > 0 && (
-                    <>
-                      <span className="text-dark-text font-medium">{selectedUrlCollectionIds.length}</span> URL collection{selectedUrlCollectionIds.length !== 1 ? "s" : ""} selected
-                      {" • "}
-                    </>
-                  )}
-                  <span className="text-dark-text font-medium">{totalImages}</span> images total
-                </p>
-              </div>
-            )}
-
-            {/* Error display */}
-            {error && (
-              <div className="mt-3 p-2 bg-red-900/30 border border-red-700 rounded-lg text-red-300 text-sm">
-                {error}
-              </div>
-            )}
-          </div>
-
-          {/* Settings Section - Two Column Layout */}
-          {totalImages > 0 && (
+          {/* Timer + image count — two-column layout (Image Curator) */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              
-              {/* Left Column: Timer Mode + (Timer & Break when Timed) */}
-              <div className="bg-dark-surface rounded-xl p-4 space-y-4">
-                {/* Timer Mode toggle */}
-                <div>
-                  <h3 className="text-sm font-medium text-dark-muted uppercase tracking-wide mb-2">
-                    Timer Mode
-                  </h3>
-                  <div className="flex gap-2">
-                    <button
-                      onClick={() => setTimedMode(true)}
-                      className={`flex-1 px-3 py-2 rounded-lg font-medium transition-colors
-                        ${isTimedMode
-                          ? "bg-blue-600 text-white"
-                          : "bg-dark-bg text-dark-muted hover:bg-dark-accent hover:text-dark-text"
-                        }`}
-                    >
-                      Timed
-                    </button>
-                    <button
-                      onClick={() => setTimedMode(false)}
-                      className={`flex-1 px-3 py-2 rounded-lg font-medium transition-colors
-                        ${!isTimedMode
-                          ? "bg-blue-600 text-white"
-                          : "bg-dark-bg text-dark-muted hover:bg-dark-accent hover:text-dark-text"
-                        }`}
-                    >
-                      Untimed
-                    </button>
+              {/* Left: collapsible timer (expanded = timed, collapsed = untimed) */}
+              <div className="bg-dark-surface rounded-xl p-4">
+                <button
+                  type="button"
+                  aria-expanded={isTimedMode}
+                  onClick={() => setTimedMode(!isTimedMode)}
+                  className="flex w-full items-center justify-between rounded-lg px-1 py-1 text-left transition-colors hover:bg-dark-accent/40"
+                >
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h3 className="text-sm font-medium text-dark-muted uppercase tracking-wide">
+                      Timer Settings
+                    </h3>
+                    {!isTimedMode && (
+                      <span className="rounded bg-dark-bg px-2 py-0.5 text-xs text-dark-muted">Untimed</span>
+                    )}
                   </div>
-                </div>
+                  <svg
+                    className={`h-5 w-5 shrink-0 text-dark-muted transition-transform ${isTimedMode ? "rotate-180" : ""}`}
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                    aria-hidden
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                  </svg>
+                </button>
 
-                {/* Timer & Break - only when Timed */}
                 {isTimedMode && (
-                  <>
-                    <div className="pt-3 border-t border-dark-accent">
-                      <h3 className="text-sm font-medium text-dark-muted uppercase tracking-wide mb-2">
+                  <div className="mt-4 space-y-4">
+                    <div>
+                      <h4 className="mb-2 text-sm font-medium uppercase tracking-wide text-dark-muted">
                         Image Duration
-                      </h3>
+                      </h4>
                       <TimerPresets />
                     </div>
+                  </div>
+                )}
+              </div>
 
-                    <div className="pt-3 border-t border-dark-accent">
-                      <h3 className="text-sm font-medium text-dark-muted uppercase tracking-wide mb-2">
-                        Break
-                      </h3>
-                      <div className="flex flex-wrap gap-1.5">
-                        {[0, 2, 3, 5, 10].map((seconds) => (
-                          <button
-                            key={seconds}
-                            onClick={() => setBreakDuration(seconds)}
-                            className={`px-3 py-1.5 rounded text-sm font-medium transition-colors
-                              ${breakDuration === seconds
-                                ? "bg-blue-600 text-white"
-                                : "bg-dark-bg text-dark-muted hover:bg-dark-accent hover:text-dark-text"
-                              }`}
-                          >
-                            {seconds === 0 ? "None" : `${seconds}s`}
-                          </button>
-                        ))}
+              {/* Right column: image count + break presets (timed only) */}
+              <div className="bg-dark-surface rounded-xl p-4 space-y-4">
+                <div>
+                  <h3 className="text-sm font-medium text-dark-muted uppercase tracking-wide mb-2">
+                    Image Count
+                  </h3>
+                  <select
+                    value={imageCountMode}
+                    onChange={(e) => setImageCountMode(e.target.value as ImageCountMode)}
+                    className="w-full px-3 py-2 bg-dark-bg border border-dark-accent rounded-lg text-dark-text 
+                               text-sm font-medium focus:outline-none focus:border-blue-500 focus:ring-1 
+                               focus:ring-blue-500/50 cursor-pointer hover:border-dark-text/50 transition-colors"
+                  >
+                    <option value="all">All ({totalImages})</option>
+                    <option value="specific">Specific number</option>
+                  </select>
+                  {imageCountMode === "specific" &&
+                    (totalImages > 0 ? (
+                      <div className="mt-3 flex items-center gap-2">
+                        <input
+                          type="number"
+                          min="1"
+                          max={totalImages}
+                          value={selectedSpecificCount}
+                          onChange={(e) => {
+                            const val = parseInt(e.target.value);
+                            if (val > 0 && val <= totalImages) setSelectedSpecificCount(val);
+                            else if (e.target.value === "") setSelectedSpecificCount(1);
+                          }}
+                          className="w-20 rounded-lg border border-dark-accent bg-dark-bg px-2 py-1.5 
+                                     text-center text-sm text-dark-text focus:border-blue-500 focus:outline-none"
+                        />
+                        <span className="text-xs text-dark-muted">of {totalImages}</span>
                       </div>
-                    </div>
-                  </>
-                )}
-              </div>
-
-              {/* Right Column: Image Count */}
-              <div className="bg-dark-surface rounded-xl p-4">
-                <h3 className="text-sm font-medium text-dark-muted uppercase tracking-wide mb-2">
-                  Image Count
-                </h3>
-                <select
-                  value={imageCountMode}
-                  onChange={(e) => setImageCountMode(e.target.value as ImageCountMode)}
-                  className="w-full px-3 py-2 bg-dark-bg border border-dark-accent rounded-lg text-dark-text 
-                             text-sm font-medium focus:outline-none focus:border-blue-500 focus:ring-1 
-                             focus:ring-blue-500/50 cursor-pointer hover:border-dark-text/50 transition-colors"
-                >
-                  <option value="all">All ({totalImages})</option>
-                  <option value="specific">Specific number</option>
-                </select>
-                {imageCountMode === "specific" && (
-                  <div className="flex items-center gap-2 mt-3">
-                    <input
-                      type="number"
-                      min="1"
-                      max={totalImages}
-                      value={selectedSpecificCount}
-                      onChange={(e) => {
-                        const val = parseInt(e.target.value);
-                        if (val > 0 && val <= totalImages) setSelectedSpecificCount(val);
-                        else if (e.target.value === "") setSelectedSpecificCount(1);
-                      }}
-                      className="w-20 px-2 py-1.5 bg-dark-bg border border-dark-accent rounded-lg 
-                                 text-dark-text text-center text-sm focus:outline-none focus:border-blue-500"
-                    />
-                    <span className="text-dark-muted text-xs">of {totalImages}</span>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* Remember settings - subtle footer, only when folders selected */}
-          {totalImages > 0 && (
-            <div className="pt-2 border-t border-dark-accent/50">
-              <div
-                className={`relative group inline-block transition-[box-shadow] ${
-                  rememberReadyForPreset ? "ring-2 ring-green-500/30 rounded-lg p-1 -m-1" : ""
-                }`}
-              >
-                <label className="flex items-center gap-2 cursor-pointer text-dark-muted text-xs hover:text-dark-text/80 transition-colors">
-                  <input
-                    type="checkbox"
-                    checked={settings.rememberHomeSettings === true}
-                    onChange={(e) => setRememberHomeSettings(e.target.checked)}
-                    className={`w-4 h-4 rounded bg-dark-bg border-dark-accent focus:ring-offset-dark-bg ${
-                      rememberReadyForPreset
-                        ? "text-green-500 focus:ring-green-500"
-                        : "text-blue-600 focus:ring-blue-500"
-                    }`}
-                  />
-                  <span>Remember current settings</span>
-                </label>
-                <div
-                  className="absolute bottom-full left-0 mb-2 px-3 py-2 bg-dark-bg border border-dark-accent
-                             rounded-lg text-xs text-dark-muted opacity-0 invisible group-hover:opacity-100 group-hover:visible
-                             transition-opacity pointer-events-none z-50 shadow-lg max-w-xs w-max"
-                >
-                  <p className="font-medium text-dark-text mb-1">Settings that will be saved:</p>
-                  <ul className="space-y-0.5 list-disc list-inside">
-                    <li>Timer Mode (Timed/Untimed)</li>
-                    <li>Image Duration</li>
-                    <li>Break Duration</li>
-                    <li>Image Count (All/Specific number)</li>
-                  </ul>
+                    ) : (
+                      <p className="mt-3 text-xs text-dark-muted">
+                        Select image sources on the New Session tab (expand <span className="text-dark-text">Image Sources</span>) to set a specific count.
+                      </p>
+                    ))}
                 </div>
-              </div>
-            </div>
-          )}
 
-                {/* Instructions (only show if no folder selected) */}
-                {totalImages === 0 && (
-                  <div className="bg-dark-surface rounded-xl p-6 text-center text-dark-muted">
-                    <p>Select a folder containing reference images to begin.</p>
-                    <p className="text-xs mt-1">Supported: JPG, PNG, GIF, WebP, BMP, TIFF</p>
+                {isTimedMode && (
+                  <div className="pt-3 border-t border-dark-accent">
+                    <h3 className="text-sm font-medium text-dark-muted uppercase tracking-wide mb-2">
+                      Break
+                    </h3>
+                    <div className="flex flex-wrap gap-1.5">
+                      {[0, 2, 3, 5, 10].map((seconds) => (
+                        <button
+                          key={seconds}
+                          type="button"
+                          onClick={() => setBreakDuration(seconds)}
+                          className={`rounded px-3 py-1.5 text-sm font-medium transition-colors
+                            ${breakDuration === seconds
+                              ? "bg-blue-600 text-white"
+                              : "bg-dark-bg text-dark-muted hover:bg-dark-accent hover:text-dark-text"
+                            }`}
+                        >
+                          {seconds === 0 ? "None" : `${seconds}s`}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 )}
+              </div>
+            </div>
+
               </div>
             ) : (
               <div className="bg-dark-surface rounded-xl p-8 text-center text-dark-muted">
@@ -1206,7 +1514,8 @@ export default function FolderPicker() {
                     Session Setup
                   </button>
                   <button
-                    onClick={handleNewSession}
+                    type="button"
+                    onClick={handleBeginSessionClick}
                     className="px-8 py-4 bg-green-600 hover:bg-green-700 rounded-xl 
                                text-white font-semibold text-lg transition-colors flex items-center gap-2"
                   >
@@ -1222,7 +1531,8 @@ export default function FolderPicker() {
               <div className="text-center py-4">
                 {selectedMode === "image-curator" && totalImages === 0 ? (
                   <p className="text-dark-muted text-sm">
-                    Add folders above to start a session
+                    Choose folders or URL lists in New Session (expand{" "}
+                    <span className="text-dark-text">Image Sources</span>) to start a session
                   </p>
                 ) : (
                   <p className="text-dark-muted text-sm">
@@ -1236,144 +1546,9 @@ export default function FolderPicker() {
                   </div>
                 ),
               },
-              {
-                id: "previous-sessions",
-                label: "Previous Sessions",
-                content: (
-                  <div className="bg-dark-surface rounded-b-xl overflow-hidden">
-                    <PreviousSessions
-                      onBack={() => setActiveTab("new-session")}
-                      onView={handleViewSession}
-                      embedded
-                    />
-                  </div>
-                ),
-              },
-              {
-                id: "presets",
-                label: "Presets",
-                content: (
-                  <div className="space-y-6 bg-dark-surface rounded-b-xl p-4 border-x border-b border-dark-accent min-h-[280px]">
-                    {/* Save New Preset button - always visible */}
-                    <div className="flex flex-col gap-2">
-                      <button
-                        onClick={handleSavePresetClick}
-                        className="w-full px-4 py-3 bg-blue-600 hover:bg-blue-700 rounded-lg text-white 
-                                   font-medium transition-colors flex items-center justify-center gap-2"
-                      >
-                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" />
-                        </svg>
-                        Save New Preset
-                      </button>
-                      {savePresetError && (
-                        <p className="text-red-400 text-sm px-2 whitespace-pre-line">{savePresetError}</p>
-                      )}
-                      {savePresetSuccess && (
-                        <p className="text-green-400 text-sm px-2">{savePresetSuccess}</p>
-                      )}
-                    </div>
-
-                    {/* Preset list or empty state */}
-                    {presets.length === 0 ? (
-                      <div className="bg-dark-bg rounded-xl p-8 text-center">
-                        <p className="text-dark-text font-medium mb-2">No presets yet</p>
-                        <p className="text-dark-muted text-sm">
-                          Enable &quot;Remember current settings&quot; in New Session and Session Setup, then return here to save a preset.
-                        </p>
-                      </div>
-                    ) : (
-                      <div className="space-y-3">
-                        {presets.map((preset) => (
-                          <div
-                            key={preset.id}
-                            className="bg-dark-bg rounded-xl p-4 hover:bg-dark-accent/30 transition-colors"
-                          >
-                            <div className="flex items-start justify-between gap-4">
-                              <div className="flex-1 min-w-0">
-                                <h3 className="text-dark-text font-semibold text-lg truncate">
-                                  {preset.name}
-                                </h3>
-                                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-1 text-dark-muted text-sm">
-                                  <span className="px-2 py-0.5 bg-dark-surface rounded text-xs font-medium">
-                                    {getModeBadgeLabel(preset.mode)}
-                                  </span>
-                                  <span className="flex items-center gap-1">
-                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                    </svg>
-                                    {formatPresetDate(preset.createdAt)}
-                                  </span>
-                                </div>
-                                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-2 text-dark-muted text-xs">
-                                  <span className="flex items-center gap-1">
-                                    <svg className="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                    </svg>
-                                    {preset.settings.isTimedMode
-                                      ? `${preset.settings.timerDuration}s per image`
-                                      : "Untimed"}
-                                  </span>
-                                  {preset.settings.isTimedMode && preset.settings.breakDuration > 0 && (
-                                    <span>• {preset.settings.breakDuration}s breaks</span>
-                                  )}
-                                  <span className="flex items-center gap-1">
-                                    <svg className="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                                    </svg>
-                                    {preset.settings.imageCountMode === "all"
-                                      ? "All images"
-                                      : `${preset.settings.maxImages ?? "?"} images`}
-                                  </span>
-                                  <span
-                                    className={
-                                      preset.settings.markupEnabled ? "text-green-400" : "text-dark-muted"
-                                    }
-                                  >
-                                    {preset.settings.markupEnabled ? "✏️ Markup on" : "👁 View only"}
-                                  </span>
-                                </div>
-                              </div>
-                              <div className="flex flex-col gap-2">
-                                <button
-                                  onClick={() => handleLoadPreset(preset)}
-                                  className="px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded-lg text-white 
-                                             font-medium text-sm transition-colors flex items-center gap-2"
-                                >
-                                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
-                                  </svg>
-                                  Load
-                                </button>
-                                <button
-                                  onClick={() => handleRenamePresetStart(preset)}
-                                  className="px-4 py-2 bg-dark-accent hover:bg-dark-surface rounded-lg text-dark-text 
-                                             font-medium text-sm transition-colors"
-                                >
-                                  Rename
-                                </button>
-                                <button
-                                  onClick={(e) => handleDeletePreset(preset.id, e)}
-                                  className="px-4 py-2 bg-dark-bg hover:bg-red-600/50 rounded-lg text-dark-muted 
-                                             hover:text-red-300 font-medium text-sm transition-colors flex items-center gap-2"
-                                >
-                                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                                  </svg>
-                                  Delete
-                                </button>
-                              </div>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                ),
-              },
             ]}
             activeTab={activeTab}
-            onTabChange={(id) => setActiveTab(id as "new-session" | "previous-sessions" | "presets")}
+            onTabChange={(id) => setActiveTab(id as "new-session" | "previous-sessions" | "advanced")}
           />
 
           {/* Download Progress Modal */}
@@ -1384,6 +1559,13 @@ export default function FolderPicker() {
               onCancel={handleDownloadCancel}
             />
           )}
+
+          <SavePresetDialog
+            isOpen={showSavePresetDialog}
+            onSave={handleSavePresetAndStart}
+            onSkip={handleSkipSaveAndStart}
+            onCancel={handleCancelSaveDialog}
+          />
 
           {/* Save Preset Modal */}
           {showSavePresetModal && (

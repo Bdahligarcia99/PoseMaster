@@ -6,27 +6,110 @@ export type PresetMode = "image-curator" | "free-draw" | "3d-perspective";
 
 export type ImageCountMode = "all" | "specific";
 
+export interface PresetSettings {
+  isTimedMode: boolean;
+  timerDuration: number;
+  breakDuration: number;
+  imageCountMode: ImageCountMode;
+  maxImages: number | null;
+  imageOpacity: number;
+  imageZoom: number;
+  markupEnabled: boolean;
+  eraserDisabled: boolean;
+  timerHidden: boolean;
+  /** Mirrors session `isSplitScreen` when the preset is applied. */
+  splitScreenEnabled: boolean;
+}
+
 export interface Preset {
   id: string;
   name: string;
   createdAt: number;
   mode: PresetMode;
-  settings: {
-    // Home screen settings (New Session tab)
-    isTimedMode: boolean;
-    timerDuration: number;
-    breakDuration: number;
-    imageCountMode: ImageCountMode;
-    maxImages: number | null;
-
-    // Session Setup settings
-    imageOpacity: number;
-    imageZoom: number;
-    eraserDisabled: boolean;
-    timerHidden: boolean;
-    markupEnabled: boolean;
-  };
+  /** Shipped presets; not persisted in presets.json */
+  isPrebuilt?: boolean;
+  settings: PresetSettings;
 }
+
+const PREBUILT_BASE_SETTINGS = {
+  imageOpacity: 100,
+  imageZoom: 100,
+  eraserDisabled: false,
+  timerHidden: false,
+  splitScreenEnabled: false,
+} as const satisfies Partial<PresetSettings>;
+
+/** Built-in presets shown on the New Session tab (Phase 2). */
+export const PREBUILT_PRESETS: readonly Preset[] = [
+  {
+    id: "quick-gestures",
+    name: "Quick Gestures",
+    createdAt: 0,
+    mode: "image-curator",
+    isPrebuilt: true,
+    settings: {
+      ...PREBUILT_BASE_SETTINGS,
+      isTimedMode: true,
+      timerDuration: 30,
+      breakDuration: 5,
+      imageCountMode: "specific",
+      maxImages: 50,
+      markupEnabled: false,
+      splitScreenEnabled: false,
+    },
+  },
+  {
+    id: "standard-practice",
+    name: "Standard Practice",
+    createdAt: 0,
+    mode: "image-curator",
+    isPrebuilt: true,
+    settings: {
+      ...PREBUILT_BASE_SETTINGS,
+      isTimedMode: true,
+      timerDuration: 60,
+      breakDuration: 5,
+      imageCountMode: "specific",
+      maxImages: 27,
+      markupEnabled: false,
+      splitScreenEnabled: false,
+    },
+  },
+  {
+    id: "deep-study",
+    name: "Deep Study",
+    createdAt: 0,
+    mode: "image-curator",
+    isPrebuilt: true,
+    settings: {
+      ...PREBUILT_BASE_SETTINGS,
+      isTimedMode: true,
+      timerDuration: 120,
+      breakDuration: 5,
+      imageCountMode: "specific",
+      maxImages: 14,
+      markupEnabled: false,
+      splitScreenEnabled: false,
+    },
+  },
+  {
+    id: "structure-study",
+    name: "Structure Study",
+    createdAt: 0,
+    mode: "image-curator",
+    isPrebuilt: true,
+    settings: {
+      ...PREBUILT_BASE_SETTINGS,
+      isTimedMode: true,
+      timerDuration: 120,
+      breakDuration: 5,
+      imageCountMode: "specific",
+      maxImages: 14,
+      markupEnabled: true,
+      splitScreenEnabled: false,
+    },
+  },
+];
 
 interface PresetsState {
   presets: Preset[];
@@ -37,7 +120,7 @@ interface PresetsState {
     name: string,
     mode: PresetMode,
     settings: Preset["settings"]
-  ) => Promise<Preset>;
+  ) => Promise<string>;
   deletePreset: (id: string) => Promise<void>;
   renamePreset: (id: string, newName: string) => Promise<void>;
   getPreset: (id: string) => Preset | undefined;
@@ -63,10 +146,10 @@ async function ensureDataDir(): Promise<void> {
 }
 
 function generatePresetId(): string {
-  return `preset_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`;
+  return `preset_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
 }
 
-const DEFAULT_PRESET_SETTINGS: Preset["settings"] = {
+const DEFAULT_PRESET_SETTINGS: PresetSettings = {
   isTimedMode: true,
   timerDuration: 30,
   breakDuration: 3,
@@ -77,6 +160,7 @@ const DEFAULT_PRESET_SETTINGS: Preset["settings"] = {
   eraserDisabled: false,
   timerHidden: false,
   markupEnabled: true,
+  splitScreenEnabled: false,
 };
 
 export const usePresetsStore = create<PresetsState>((set, get) => ({
@@ -93,12 +177,17 @@ export const usePresetsStore = create<PresetsState>((set, get) => ({
         const content = await readTextFile(presetsPath);
         const data = JSON.parse(content);
         const rawPresets = Array.isArray(data.presets) ? data.presets : [];
-        // Migrate: "continuous" imageCountMode -> "all"
-        const presets = rawPresets.map((p: Preset) =>
-          (p.settings?.imageCountMode as string | undefined) === "continuous"
-            ? { ...p, settings: { ...p.settings, imageCountMode: "all" as const } }
-            : p
-        );
+        const presets = rawPresets.map((p: Preset) => {
+          let settings: PresetSettings = {
+            ...DEFAULT_PRESET_SETTINGS,
+            ...p.settings,
+            splitScreenEnabled: p.settings?.splitScreenEnabled ?? false,
+          };
+          if ((settings.imageCountMode as string) === "continuous") {
+            settings = { ...settings, imageCountMode: "all" };
+          }
+          return { ...p, settings };
+        });
         set({ presets, isLoaded: true });
       } else {
         set({ isLoaded: true });
@@ -123,6 +212,7 @@ export const usePresetsStore = create<PresetsState>((set, get) => ({
       name,
       createdAt: Date.now(),
       mode,
+      isPrebuilt: false,
       settings: { ...DEFAULT_PRESET_SETTINGS, ...settings },
     };
 
@@ -132,7 +222,7 @@ export const usePresetsStore = create<PresetsState>((set, get) => ({
     const data = { presets };
     await writeTextFile(presetsPath, JSON.stringify(data, null, 2));
 
-    return preset;
+    return preset.id;
   },
 
   deletePreset: async (id) => {

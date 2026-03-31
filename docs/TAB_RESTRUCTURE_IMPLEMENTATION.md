@@ -169,13 +169,9 @@ Restructure the app's tab system to make it more intuitive:
 - [ ] Settings auto-persist in sessionStore during app usage (already works)
 - [ ] Add `splitScreenEnabled` to preset settings schema
 
-### Phase 6: Remove Remember Settings Checkboxes
-- [ ] Remove checkbox from FolderPicker (Advanced tab)
-- [ ] Remove checkbox from SessionSetup
-- [ ] Remove `rememberHomeSettings` from settingsStore
-- [ ] Remove `rememberSetupSettings` from settingsStore
-- [ ] Remove `clearRememberFlags` action
-- [ ] Clean up any related migration logic
+### Phase 6: Remove “remember settings” checkboxes (done)
+- [x] Advanced tab and Session Setup: checkboxes removed; settings persist without them
+- [x] Store: legacy fields stripped on load; related actions removed
 
 ---
 
@@ -228,12 +224,8 @@ export const PREBUILT_PRESETS: Preset[] = [
 
 ```typescript
 interface AppSettings {
-  // Add
   lastUsedPresetId: string | null;
-  
-  // Remove
-  // rememberHomeSettings: boolean;  // DELETE
-  // rememberSetupSettings: boolean; // DELETE
+  // … other fields; obsolete keys in older JSON are ignored / stripped on load
 }
 ```
 
@@ -280,7 +272,7 @@ interface Preset {
 
 1. Existing user presets remain unchanged
 2. Existing settings should still load (backward compatible)
-3. `rememberHomeSettings` and `rememberSetupSettings` can be ignored on load
+3. Obsolete keys in older `settings.json` are removed in memory on load and not written back
 4. First app open after update: no `lastUsedPresetId`, show New Session tab
 
 ---

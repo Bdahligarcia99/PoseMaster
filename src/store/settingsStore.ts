@@ -24,7 +24,7 @@ export type ImageSourceFilter = "all" | "folders" | "url-lists";
 
 export type ImageCountMode = "all" | "specific";
 
-interface AppSettings {
+export interface AppSettings {
   isTimedMode: boolean; // true = Timed, false = Untimed
   timerDuration: number;
   breakDuration: number;
@@ -39,11 +39,11 @@ interface AppSettings {
   eraserDisabled: boolean;
   timerHidden: boolean;
   customColors: string[]; // User's custom color swatches
-  rememberHomeSettings: boolean; // Include New Session tab settings when creating preset
-  rememberSetupSettings: boolean; // Include Session Setup settings when creating preset
-  /** When true, Session Setup opens with split screen enabled (if user chose to remember). */
+  /** When true, Session Setup restores split screen from the last saved preference. */
   preferSplitScreen: boolean;
   imageSourceFilter: ImageSourceFilter; // all | folders | url-lists
+  /** Last preset chosen from the home screen (prebuilt id or saved preset id). */
+  lastUsedPresetId: string | null;
 }
 
 interface SettingsState {
@@ -70,6 +70,8 @@ interface SettingsState {
   clearUrlCollectionCache: (id: string) => Promise<void>;
   setImageSourceFilter: (filter: ImageSourceFilter) => Promise<void>;
   updateSettings: (settings: Partial<AppSettings>) => Promise<void>;
+  /** Prebuilt id (e.g. quick-gestures) or user preset id (preset_…). */
+  setLastUsedPresetId: (id: string | null) => Promise<void>;
   setLastSelectedFolder: (path: string | null) => Promise<void>; // Deprecated
   setLastSelectedFolders: (paths: string[]) => Promise<void>;
   toggleFolderSelection: (path: string) => Promise<void>;
@@ -79,10 +81,6 @@ interface SettingsState {
   addCustomColor: (color: string) => Promise<void>;
   removeCustomColor: (color: string) => Promise<void>;
   resetCustomColors: () => Promise<void>;
-  // Remember settings for preset
-  setRememberHomeSettings: (value: boolean) => Promise<void>;
-  setRememberSetupSettings: (value: boolean) => Promise<void>;
-  clearRememberFlags: () => Promise<void>;
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -100,10 +98,9 @@ const DEFAULT_SETTINGS: AppSettings = {
   eraserDisabled: false,
   timerHidden: false,
   customColors: [],
-  rememberHomeSettings: false,
-  rememberSetupSettings: false,
   preferSplitScreen: false,
   imageSourceFilter: "all",
+  lastUsedPresetId: null,
 };
 
 const SETTINGS_FILE = "settings.json";
@@ -175,11 +172,22 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         if (loadedSettings.preferSplitScreen === undefined) {
           loadedSettings.preferSplitScreen = false;
         }
+        if (loadedSettings.lastUsedPresetId === undefined) {
+          loadedSettings.lastUsedPresetId = null;
+        }
+
+        // Legacy keys from older settings.json — drop so they are not re-saved
+        const raw = loadedSettings as AppSettings & {
+          rememberHomeSettings?: boolean;
+          rememberSetupSettings?: boolean;
+        };
+        delete raw.rememberHomeSettings;
+        delete raw.rememberSetupSettings;
 
         set({
           savedFolders: data.savedFolders || [],
           urlCollections: data.urlCollections || [],
-          settings: loadedSettings,
+          settings: raw as AppSettings,
           isLoaded: true,
         });
       } else {
@@ -300,6 +308,13 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     await get().saveSettings();
   },
 
+  setLastUsedPresetId: async (id) => {
+    set((state) => ({
+      settings: { ...state.settings, lastUsedPresetId: id },
+    }));
+    await get().saveSettings();
+  },
+
   setLastSelectedFolder: async (path) => {
     set((state) => ({
       settings: { ...state.settings, lastSelectedFolder: path },
@@ -390,31 +405,6 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   resetCustomColors: async () => {
     set((state) => ({
       settings: { ...state.settings, customColors: [] },
-    }));
-    await get().saveSettings();
-  },
-
-  setRememberHomeSettings: async (value) => {
-    set((state) => ({
-      settings: { ...state.settings, rememberHomeSettings: value },
-    }));
-    await get().saveSettings();
-  },
-
-  setRememberSetupSettings: async (value) => {
-    set((state) => ({
-      settings: { ...state.settings, rememberSetupSettings: value },
-    }));
-    await get().saveSettings();
-  },
-
-  clearRememberFlags: async () => {
-    set((state) => ({
-      settings: {
-        ...state.settings,
-        rememberHomeSettings: false,
-        rememberSetupSettings: false,
-      },
     }));
     await get().saveSettings();
   },

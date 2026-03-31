@@ -154,11 +154,9 @@ export default function SessionView() {
 
       if (lower === "s" && !e.ctrlKey && !e.metaKey && !e.altKey) {
         toggleSplitScreen();
-        if (useSettingsStore.getState().settings.rememberSetupSettings) {
-          void updateSettings({
-            preferSplitScreen: useSessionStore.getState().isSplitScreen,
-          });
-        }
+        void updateSettings({
+          preferSplitScreen: useSessionStore.getState().isSplitScreen,
+        });
         return;
       }
 
