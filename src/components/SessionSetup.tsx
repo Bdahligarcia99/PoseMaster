@@ -320,121 +320,71 @@ export default function SessionSetup() {
             )}
           </div>
 
-          {/* Timer preview - hidden when Untimed or Hide Timer */}
-          <div className="flex-1 max-w-md flex flex-col items-center justify-center gap-2">
-            <div className="flex flex-wrap items-center justify-center gap-2">
-              <button
-                type="button"
-                onClick={() => toggleSplitAndPersistPreference()}
-                title="Toggle split screen mode"
-                aria-pressed={isSplitScreen}
-                aria-label="Toggle split screen mode"
-                className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors
-                  ${
-                    isSplitScreen
-                      ? "bg-blue-600 text-white shadow-sm ring-1 ring-blue-400/50"
-                      : "text-dark-muted hover:text-dark-text bg-dark-bg hover:bg-dark-accent border border-dark-accent"
-                  }`}
-              >
-                <svg
-                  className="w-5 h-5 shrink-0"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth={2}
-                  aria-hidden
+          {/* Timer preview - hidden when Untimed or Hide Timer; split / compare only when split is on */}
+          <div className="flex max-w-md flex-1 flex-col items-center justify-center gap-2">
+            {isSplitScreen && (
+              <div className="flex flex-wrap items-center justify-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => swapSplitSides()}
+                  title="Swap sides"
+                  aria-label="Swap sides"
+                  className="flex items-center justify-center rounded-lg border border-dark-accent bg-dark-bg p-2 text-sm font-medium text-dark-muted transition-colors hover:bg-dark-accent hover:text-dark-text"
                 >
-                  <rect x="3" y="3" width="8" height="18" rx="1" />
-                  <rect x="13" y="3" width="8" height="18" rx="1" />
-                </svg>
-                Split Screen
-              </button>
-              {isSplitScreen && (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => swapSplitSides()}
-                    title="Swap sides"
-                    aria-label="Swap sides"
-                    className="flex items-center justify-center p-2 rounded-lg text-sm font-medium transition-colors text-dark-muted hover:text-dark-text bg-dark-bg hover:bg-dark-accent border border-dark-accent"
+                  <svg
+                    className="h-5 w-5 shrink-0"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth={2}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden
                   >
-                    <svg
-                      className="w-5 h-5 shrink-0"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth={2}
+                    <path d="M7 16l-4-4 4-4" />
+                    <path d="M17 8l4 4-4 4" />
+                    <path d="M3 12h18" />
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => toggleCompareMode()}
+                  title="Show Practice strokes over the reference for proportion compare"
+                  aria-pressed={isCompareMode}
+                  aria-label="Toggle compare overlay"
+                  className={`flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors
+                    ${
+                      isCompareMode
+                        ? "bg-cyan-600 text-white shadow-sm ring-1 ring-cyan-400/50"
+                        : "border border-dark-accent bg-dark-bg text-dark-muted hover:bg-dark-accent hover:text-dark-text"
+                    }`}
+                >
+                  <svg
+                    className="h-5 w-5 shrink-0"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth={2}
+                    aria-hidden
+                  >
+                    <path
                       strokeLinecap="round"
                       strokeLinejoin="round"
-                      aria-hidden
-                    >
-                      <path d="M7 16l-4-4 4-4" />
-                      <path d="M17 8l4 4-4 4" />
-                      <path d="M3 12h18" />
-                    </svg>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => toggleCompareMode()}
-                    title="Show Practice strokes over the reference for proportion compare"
-                    aria-pressed={isCompareMode}
-                    aria-label="Toggle compare overlay"
-                    className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors
-                      ${
-                        isCompareMode
-                          ? "bg-cyan-600 text-white shadow-sm ring-1 ring-cyan-400/50"
-                          : "text-dark-muted hover:text-dark-text bg-dark-bg hover:bg-dark-accent border border-dark-accent"
-                      }`}
-                  >
-                    <svg
-                      className="w-5 h-5 shrink-0"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth={2}
-                      aria-hidden
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"
-                      />
-                    </svg>
-                    Compare
-                  </button>
-                </>
-              )}
-            </div>
+                      d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"
+                    />
+                  </svg>
+                  Compare
+                </button>
+              </div>
+            )}
             {isTimedMode && !timerHidden ? (
-              <div className="flex items-center gap-4 w-full">
-                {/* Progress bar preview */}
-                <div className="flex-1 h-2 bg-dark-bg rounded-full overflow-hidden">
-                  <div className="h-full w-0 bg-blue-500" />
+              <div className="flex w-full items-center gap-4">
+                <div className="h-2 flex-1 overflow-hidden rounded-full bg-dark-bg">
+                  <div className="h-full w-0 bg-blue-500 transition-all duration-200" />
                 </div>
-                {/* Time display */}
-                <span className="font-mono text-lg min-w-[60px] text-right text-dark-text">
+                <span className="min-w-[60px] text-right font-mono text-lg text-dark-text">
                   {Math.floor(timerDuration / 60)}:{(timerDuration % 60).toString().padStart(2, "0")}
                 </span>
-                {/* Placeholder pause button */}
-                <button
-                  disabled
-                  className="p-2 rounded-lg bg-dark-bg text-dark-muted cursor-not-allowed opacity-50"
-                  title="Pause (preview only)"
-                >
-                  <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
-                    <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z" />
-                  </svg>
-                </button>
-                {/* Placeholder skip button */}
-                <button
-                  disabled
-                  className="p-2 rounded-lg bg-dark-bg text-dark-muted cursor-not-allowed opacity-50"
-                  title="Skip (preview only)"
-                >
-                  <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
-                    <path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z" />
-                  </svg>
-                </button>
               </div>
             ) : (
               <div className="text-center w-full">
@@ -456,6 +406,49 @@ export default function SessionSetup() {
                 {saveMessage.text}
               </span>
             )}
+
+            {isTimedMode && !timerHidden && (
+              <>
+                <button
+                  type="button"
+                  disabled
+                  className="cursor-not-allowed rounded-lg bg-dark-bg p-2 text-dark-muted opacity-50"
+                  title="Pause (preview only)"
+                >
+                  <svg className="h-5 w-5" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z" />
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  disabled
+                  className="cursor-not-allowed rounded-lg bg-dark-bg p-2 text-dark-muted opacity-50"
+                  title="Skip (preview only)"
+                >
+                  <svg className="h-5 w-5" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z" />
+                  </svg>
+                </button>
+              </>
+            )}
+
+            <button
+              type="button"
+              onClick={() => toggleSplitAndPersistPreference()}
+              className={`flex items-center gap-2 rounded-lg px-3 py-1.5 transition-colors
+                ${isSplitScreen
+                  ? "bg-blue-600 text-white"
+                  : "text-dark-muted hover:bg-dark-accent hover:text-dark-text"
+                }`}
+              title={isSplitScreen ? "Disable split view" : "Enable split view"}
+              aria-pressed={isSplitScreen}
+              aria-label={isSplitScreen ? "Disable split view" : "Enable split view"}
+            >
+              <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden>
+                <rect x="3" y="3" width="8" height="18" rx="1" strokeWidth={2} />
+                <rect x="13" y="3" width="8" height="18" rx="1" strokeWidth={2} />
+              </svg>
+            </button>
 
             {/* Save preview button */}
             <button

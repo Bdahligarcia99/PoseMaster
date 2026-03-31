@@ -7,7 +7,12 @@ import ImageViewer from "./ImageViewer";
 import Toolbar from "./Toolbar";
 import DrawingDataOverlay from "./DrawingDataOverlay";
 import GuidelineOverlay from "./GuidelineOverlay";
-import Timer from "./Timer";
+import {
+  SessionTimerProvider,
+  TimerProgressSection,
+  TimerPauseControl,
+  TimerSkipControl,
+} from "./Timer";
 import SaveSessionModal from "./SaveSessionModal";
 
 // Lazy load drawing surfaces to prevent initial freeze
@@ -91,6 +96,13 @@ export default function SessionView() {
     setShowSaveModal(true);
   };
 
+  const toggleSplitAndPersistPreference = useCallback(() => {
+    toggleSplitScreen();
+    void updateSettings({
+      preferSplitScreen: useSessionStore.getState().isSplitScreen,
+    });
+  }, [toggleSplitScreen, updateSettings]);
+
   // Prevent display sleep during session
   useEffect(() => {
     invoke("prevent_display_sleep").catch((err) => {
@@ -153,10 +165,7 @@ export default function SessionView() {
       const lower = e.key.toLowerCase();
 
       if (lower === "s" && !e.ctrlKey && !e.metaKey && !e.altKey) {
-        toggleSplitScreen();
-        void updateSettings({
-          preferSplitScreen: useSessionStore.getState().isSplitScreen,
-        });
+        toggleSplitAndPersistPreference();
         return;
       }
 
@@ -212,12 +221,11 @@ export default function SessionView() {
     handleNextImage,
     isSplitScreen,
     activeCanvas,
-    toggleSplitScreen,
+    toggleSplitAndPersistPreference,
     setActiveCanvas,
     toggleCompareMode,
     swapSplitSides,
     skipCurrentImage,
-    updateSettings,
   ]);
 
   // Save and exit handler
@@ -272,6 +280,7 @@ export default function SessionView() {
   };
 
   return (
+    <SessionTimerProvider>
     <div className="h-full flex flex-col bg-dark-bg">
       {/* Save Session Modal */}
       <SaveSessionModal
@@ -383,13 +392,38 @@ export default function SessionView() {
             )}
           </div>
 
-          {/* Timer - only in timed mode; spacer when untimed */}
-          <div className="flex-1 max-w-md flex items-center">
-            {isTimedMode ? <Timer /> : <div className="flex-1" />}
+          {/* Timer track + pause (skip is with session actions) */}
+          <div className="flex min-w-0 max-w-md flex-1 items-center gap-4">
+            <TimerProgressSection />
+            {isTimedMode ? <TimerPauseControl /> : null}
           </div>
 
           {/* Session buttons */}
-          <div className="flex items-center gap-2">
+          <div className="flex shrink-0 items-center gap-2">
+            <TimerSkipControl />
+            <button
+              type="button"
+              onClick={toggleSplitAndPersistPreference}
+              className={`flex items-center gap-2 rounded-lg px-3 py-1.5 transition-colors
+                ${isSplitScreen
+                  ? "bg-blue-600 text-white"
+                  : "text-dark-muted hover:bg-dark-accent hover:text-dark-text"
+                }`}
+              title={isSplitScreen ? "Disable split view" : "Enable split view"}
+              aria-pressed={isSplitScreen}
+              aria-label={isSplitScreen ? "Disable split view" : "Enable split view"}
+            >
+              <svg
+                className="h-5 w-5"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+                aria-hidden
+              >
+                <rect x="3" y="3" width="8" height="18" rx="1" strokeWidth={2} />
+                <rect x="13" y="3" width="8" height="18" rx="1" strokeWidth={2} />
+              </svg>
+            </button>
             <button
               onClick={() => setShowSaveModal(true)}
               className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-white 
@@ -723,5 +757,6 @@ export default function SessionView() {
         <span>Esc: End</span>
       </div>
     </div>
+    </SessionTimerProvider>
   );
 }

@@ -1,7 +1,39 @@
-import { useEffect, useState, useCallback, useRef } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { useSessionStore } from "../store/sessionStore";
 
-export default function Timer() {
+type SessionTimerContextValue = {
+  showTimer: boolean;
+  isTimedMode: boolean;
+  isOnBreak: boolean;
+  isTimerPaused: boolean;
+  progress: number;
+  timeRemaining: number;
+  breakTimeRemaining: number;
+  toggleTimerPause: () => void;
+  handleSkip: () => void;
+  formatTime: (seconds: number) => string;
+};
+
+const SessionTimerContext = createContext<SessionTimerContextValue | null>(null);
+
+function useSessionTimerContext(component: string): SessionTimerContextValue {
+  const ctx = useContext(SessionTimerContext);
+  if (!ctx) {
+    throw new Error(`${component} must be used inside SessionTimerProvider`);
+  }
+  return ctx;
+}
+
+function useSessionTimerModel(): SessionTimerContextValue {
   const isTimedMode = useSessionStore((state) => state.isTimedMode);
   const timerDuration = useSessionStore((state) => state.timerDuration);
   const breakDuration = useSessionStore((state) => state.breakDuration);
@@ -14,15 +46,13 @@ export default function Timer() {
   const endSession = useSessionStore((state) => state.endSession);
   const startBreak = useSessionStore((state) => state.startBreak);
   const endBreak = useSessionStore((state) => state.endBreak);
-  
+
   const [timeRemaining, setTimeRemaining] = useState(timerDuration);
   const [breakTimeRemaining, setBreakTimeRemaining] = useState(breakDuration);
   const isAdvancingRef = useRef(false);
 
-  // Untimed mode: no countdown, user advances manually
   const showTimer = isTimedMode && !timerHidden;
 
-  // Reset timer when image changes (not during break)
   useEffect(() => {
     if (!isOnBreak && isTimedMode) {
       setTimeRemaining(timerDuration);
@@ -30,38 +60,31 @@ export default function Timer() {
     }
   }, [timerDuration, currentImageIndex, isOnBreak, isTimedMode]);
 
-  // Reset break timer when break starts
   useEffect(() => {
     if (isOnBreak) {
       setBreakTimeRemaining(breakDuration);
     }
   }, [isOnBreak, breakDuration]);
 
-  // Main image timer countdown (skip when untimed)
   useEffect(() => {
     if (!isTimedMode || isTimerPaused || isOnBreak) return;
 
     const interval = setInterval(() => {
       setTimeRemaining((prev) => {
         if (prev <= 1) {
-          // Prevent double-advance
           if (isAdvancingRef.current) return timerDuration;
           isAdvancingRef.current = true;
-          
-          // Check if this is the last image
+
           if (currentImageIndex >= images.length - 1) {
-            // End session
             setTimeout(() => endSession(), 0);
             return 0;
           }
-          
-          // Time's up - start break if break duration > 0
+
           if (breakDuration > 0) {
             setTimeout(() => startBreak(), 0);
             return timerDuration;
           }
-          
-          // No break, advance to next image immediately
+
           setTimeout(() => {
             useSessionStore.getState().nextImage();
           }, 0);
@@ -74,14 +97,12 @@ export default function Timer() {
     return () => clearInterval(interval);
   }, [isTimedMode, isTimerPaused, isOnBreak, timerDuration, breakDuration, currentImageIndex, images.length, endSession, startBreak]);
 
-  // Break countdown (only in timed mode)
   useEffect(() => {
     if (!isTimedMode || !isOnBreak || isTimerPaused) return;
 
     const interval = setInterval(() => {
       setBreakTimeRemaining((prev) => {
         if (prev <= 1) {
-          // Break is over, advance to next image
           setTimeout(() => {
             endBreak();
             useSessionStore.getState().nextImage();
@@ -96,9 +117,7 @@ export default function Timer() {
     return () => clearInterval(interval);
   }, [isTimedMode, isOnBreak, isTimerPaused, endBreak]);
 
-  // Reset timer when manually skipping
   const handleSkip = useCallback(() => {
-    // If on break, skip the break
     if (isOnBreak) {
       endBreak();
       useSessionStore.getState().nextImage();
@@ -106,13 +125,11 @@ export default function Timer() {
       return;
     }
 
-    // Check if this is the last image
     if (currentImageIndex >= images.length - 1) {
       endSession();
       return;
     }
 
-    // Untimed: always advance immediately. Timed: start break if enabled, else advance
     if (!isTimedMode) {
       useSessionStore.getState().nextImage();
       return;
@@ -125,83 +142,122 @@ export default function Timer() {
     setTimeRemaining(timerDuration);
   }, [isTimedMode, timerDuration, breakDuration, currentImageIndex, images.length, endSession, isOnBreak, startBreak, endBreak]);
 
-  // Format time as MM:SS
-  const formatTime = (seconds: number) => {
+  const formatTime = useCallback((seconds: number) => {
     const mins = Math.floor(seconds / 60);
     const secs = seconds % 60;
     return `${mins}:${secs.toString().padStart(2, "0")}`;
-  };
+  }, []);
 
-  // Calculate progress percentage
-  // During image: fills up from 0% to 100%
-  // During break: empties from 100% back to 0%
-  const progress = isOnBreak 
-    ? (breakTimeRemaining / breakDuration) * 100  // Goes from 100% down to 0%
-    : ((timerDuration - timeRemaining) / timerDuration) * 100;  // Goes from 0% up to 100%
+  const progress = useMemo(() => {
+    if (isOnBreak) {
+      if (breakDuration <= 0) return 0;
+      return ((breakDuration - breakTimeRemaining) / breakDuration) * 100;
+    }
+    if (timerDuration <= 0) return 0;
+    return ((timerDuration - timeRemaining) / timerDuration) * 100;
+  }, [isOnBreak, breakDuration, breakTimeRemaining, timerDuration, timeRemaining]);
 
-  return (
-    <div className="flex items-center gap-4">
-      {/* Break indicator - only show if timer is visible */}
-      {showTimer && isOnBreak && (
-        <span className="text-yellow-400 font-medium text-sm">BREAK</span>
-      )}
-      
-      {/* Progress bar - hide if timer hidden or untimed */}
-      {showTimer && (
-        <div className="flex-1 h-2 bg-dark-surface rounded-full overflow-hidden">
-          <div
-            className={`h-full ${isOnBreak ? "bg-yellow-500" : "bg-blue-500"}`}
-            style={{ width: `${progress}%` }}
-          />
-        </div>
-      )}
-
-      {/* Time display - hide if timer hidden or untimed */}
-      {showTimer && (
-        <span className={`font-mono text-lg min-w-[60px] text-right ${
-          isOnBreak ? "text-yellow-400" : "text-dark-text"
-        }`}>
-          {isOnBreak ? formatTime(breakTimeRemaining) : formatTime(timeRemaining)}
-        </span>
-      )}
-
-      {/* Spacer when timer is hidden or untimed to push buttons to the right */}
-      {!showTimer && <div className="flex-1" />}
-
-      {/* Pause/Resume button - only in timed mode */}
-      {isTimedMode && (
-      <button
-        onClick={toggleTimerPause}
-        className="p-2 rounded-lg bg-dark-surface hover:bg-dark-accent transition-colors"
-        title={isTimerPaused ? "Resume" : "Pause"}
-      >
-        {isTimerPaused ? (
-          <svg className="w-5 h-5 text-dark-text" fill="currentColor" viewBox="0 0 24 24">
-            <path d="M8 5v14l11-7z" />
-          </svg>
-        ) : (
-          <svg className="w-5 h-5 text-dark-text" fill="currentColor" viewBox="0 0 24 24">
-            <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z" />
-          </svg>
-        )}
-      </button>
-      )}
-
-      {/* Skip / Next button */}
-      <button
-        onClick={handleSkip}
-        className="p-2 rounded-lg bg-dark-surface hover:bg-dark-accent transition-colors"
-        title="Skip to next image"
-      >
-        <svg className="w-5 h-5 text-dark-text" fill="currentColor" viewBox="0 0 24 24">
-          <path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z" />
-        </svg>
-      </button>
-    </div>
+  return useMemo(
+    () => ({
+      showTimer,
+      isTimedMode,
+      isOnBreak,
+      isTimerPaused,
+      progress,
+      timeRemaining,
+      breakTimeRemaining,
+      toggleTimerPause,
+      handleSkip,
+      formatTime,
+    }),
+    [
+      showTimer,
+      isTimedMode,
+      isOnBreak,
+      isTimerPaused,
+      progress,
+      timeRemaining,
+      breakTimeRemaining,
+      toggleTimerPause,
+      handleSkip,
+      formatTime,
+    ]
   );
 }
 
-// Export a hook for external timer reset
+export function SessionTimerProvider({ children }: { children: ReactNode }) {
+  const value = useSessionTimerModel();
+  return <SessionTimerContext.Provider value={value}>{children}</SessionTimerContext.Provider>;
+}
+
+export function TimerProgressSection() {
+  const { showTimer, isOnBreak, progress, timeRemaining, breakTimeRemaining, formatTime } =
+    useSessionTimerContext("TimerProgressSection");
+
+  if (!showTimer) {
+    return <div className="flex-1" />;
+  }
+
+  return (
+    <>
+      {isOnBreak && <span className="text-sm font-medium text-yellow-400">BREAK</span>}
+      <div className="flex-1 h-2 overflow-hidden rounded-full bg-dark-surface">
+        <div
+          className={`h-full transition-[width] duration-200 ease-linear ${isOnBreak ? "bg-yellow-500" : "bg-blue-500"}`}
+          style={{ width: `${Math.min(100, Math.max(0, progress))}%` }}
+        />
+      </div>
+      <span
+        className={`min-w-[60px] text-right font-mono text-lg ${isOnBreak ? "text-yellow-400" : "text-dark-text"}`}
+      >
+        {isOnBreak ? formatTime(breakTimeRemaining) : formatTime(timeRemaining)}
+      </span>
+    </>
+  );
+}
+
+export function TimerPauseControl() {
+  const { isTimedMode, isTimerPaused, toggleTimerPause } = useSessionTimerContext("TimerPauseControl");
+
+  if (!isTimedMode) return null;
+
+  return (
+    <button
+      type="button"
+      onClick={toggleTimerPause}
+      className="rounded-lg bg-dark-surface p-2 transition-colors hover:bg-dark-accent"
+      title={isTimerPaused ? "Resume" : "Pause"}
+    >
+      {isTimerPaused ? (
+        <svg className="h-5 w-5 text-dark-text" fill="currentColor" viewBox="0 0 24 24">
+          <path d="M8 5v14l11-7z" />
+        </svg>
+      ) : (
+        <svg className="h-5 w-5 text-dark-text" fill="currentColor" viewBox="0 0 24 24">
+          <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z" />
+        </svg>
+      )}
+    </button>
+  );
+}
+
+export function TimerSkipControl() {
+  const { handleSkip } = useSessionTimerContext("TimerSkipControl");
+
+  return (
+    <button
+      type="button"
+      onClick={handleSkip}
+      className="rounded-lg bg-dark-surface p-2 transition-colors hover:bg-dark-accent"
+      title="Skip to next image"
+    >
+      <svg className="h-5 w-5 text-dark-text" fill="currentColor" viewBox="0 0 24 24">
+        <path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z" />
+      </svg>
+    </button>
+  );
+}
+
 export function useTimerReset() {
   const timerDuration = useSessionStore((state) => state.timerDuration);
   return { reset: () => {}, timerDuration };
